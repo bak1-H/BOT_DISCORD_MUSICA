@@ -2,13 +2,21 @@ import base64
 import os
 import asyncio
 import functools
-
+import lyricsgenius
+import random
 import discord
 from discord.ext import commands
 import yt_dlp
 from dotenv import load_dotenv
 
 load_dotenv()
+
+genius = lyricsgenius.Genius(
+    os.getenv("GENIUS_API_TOKEN"),
+    skip_non_songs=True,
+    remove_section_headers=True,
+    verbose=False
+)
 
 PO_TOKEN = os.getenv("YOUTUBE_PO_TOKEN", "").strip()
 VISITOR_DATA = os.getenv("YOUTUBE_VISITOR_DATA", "").strip()
@@ -41,6 +49,9 @@ ytdlp_common_opts = {
 queues = {}
 current_song = {}
 
+autoplay_enabled = {}
+last_played_query = {}
+
 
 def normalize_youtube_url(value: str | None) -> str | None:
     if not value:
@@ -69,6 +80,41 @@ def build_ytdlp_opts(is_search: bool) -> dict:
     return opts
 
 
+async def autoplay_next(ctx):
+    guild_id = ctx.guild.id
+
+    if not autoplay_enabled.get(guild_id):
+        return False
+
+    query = last_played_query.get(guild_id)
+    if not query:
+        return False
+
+    loop = asyncio.get_event_loop()
+
+    try:
+        info = await ytdlp_extract(loop, query, is_search=True)
+        entries = info.get("entries") if isinstance(info, dict) else None
+        if not entries:
+            return False
+
+        candidate = random.choice(entries[:5])
+        url = normalize_youtube_url(
+            candidate.get("webpage_url") or candidate.get("url")
+        )
+
+        if not url:
+            return False
+
+        queues.setdefault(guild_id, []).append(url)
+        return True
+
+    except Exception as e:
+        print(f"Error en autoplay: {e}")
+        return False
+
+
+
 async def ytdlp_extract(loop, query: str, is_search: bool = False) -> dict:
     os.environ["YT_DLP_JS_RUNTIME"] = "node"
     opts = build_ytdlp_opts(is_search)
@@ -95,7 +141,12 @@ async def play_next(ctx):
     guild_id = ctx.guild.id
     queue = queues.get(guild_id)
 
-    if not queue:
+    # 🔁 Si la cola está vacía, intenta autoplay
+    if not queue or len(queue) == 0:
+        if await autoplay_next(ctx):
+            await play_next(ctx)
+            return
+
         if ctx.voice_client:
             await ctx.voice_client.disconnect()
         return
@@ -117,13 +168,22 @@ async def play_next(ctx):
         source = discord.FFmpegPCMAudio(audio_url, before_options=ffmpeg_opts)
 
         current_song[guild_id] = info.get("title", "Desconocido")
-        ctx.voice_client.play(source, after=lambda e: bot.loop.create_task(play_next(ctx)))
+        last_played_query[guild_id] = current_song[guild_id]
+
+        ctx.voice_client.play(
+            source,
+            after=lambda e: bot.loop.create_task(play_next(ctx))
+        )
+
         await ctx.send(f"🎶 Reproduciendo: **{current_song[guild_id]}**")
 
     except Exception as e:
         print(f"Error en play_next: {e}")
-        await ctx.send("❌ Error al intentar reproducccir esta canción. Pasando a la siguiente...")
+        await ctx.send(
+            "❌ Error al intentar reproducir esta canción. Pasando a la siguiente..."
+        )
         await play_next(ctx)
+
 
 
 @bot.command()
@@ -163,9 +223,105 @@ async def play(ctx, *, search: str = None):
         await ctx.send("❌ Hubo un error procesando la búsqueda.")
 
 
+@bot.command()
+@commands.has_permissions(manage_messages=True)
+async def clear(ctx, amount: int = 1):
+    if amount < 1:
+        return await ctx.send("❌ Debes indicar un número mayor a 0.")
+
+    await ctx.channel.purge(limit=amount + 1)
+
+
+
+@bot.command()
+async def lyrics(ctx, *, song: str = None):
+    if not song:
+        return await ctx.send("❌ Escribe el nombre de la canción.")
+
+    await ctx.send(f"📄 Buscando letra de **{song}**...")
+
+    try:
+        song_data = genius.search_song(song)
+        if not song_data or not song_data.lyrics:
+            return await ctx.send("❌ No se encontró la letra.")
+
+        lyrics = song_data.lyrics
+        if len(lyrics) > 2000:
+            lyrics = lyrics[:1990] + "..."
+
+        await ctx.send(f"🎶 **{song_data.title} – {song_data.artist}**\n\n{lyrics}")
+
+    except Exception as e:
+        print(f"Error en lyrics: {e}")
+        await ctx.send("❌ Error al obtener la letra.")
+
+
+@bot.command()
+async def skip(ctx):
+    if not ctx.voice_client or not ctx.voice_client.is_playing():
+        return await ctx.send("❌ No hay ninguna canción reproduciéndose.")
+
+    ctx.voice_client.stop()
+    await ctx.send("⏭️ Canción saltada.")
+
+
+@bot.command()
+async def stop(ctx):
+    guild_id = ctx.guild.id
+
+    if not ctx.voice_client:
+        return await ctx.send("❌ No estoy conectado a un canal de voz.")
+
+    queues[guild_id] = []
+
+    if ctx.voice_client.is_playing():
+        ctx.voice_client.stop()
+
+    await ctx.voice_client.disconnect()
+    await ctx.send("⏹️ Música detenida y cola limpiada.")
+
 @bot.event
 async def on_ready():
     print(f"✅ {bot.user} online y listo.")
+
+
+@bot.command()
+async def comandos(ctx):
+    comandos_lista = """
+    🎵 **Comandos Disponibles** 🎵
+    
+    `!play <nombre o URL>` - Reproduce una canción o la añade a la cola.
+    `!skip` - Salta la canción actual.
+    `!stop` - Detiene la música y limpia la cola.
+    `!lyrics <nombre de la canción>` - Muestra la letra de la canción.
+    `!clear <número>` - Limpia mensajes en el canal (requiere permisos).
+    `!repo` - Muestra el enlace al repositorio del bot.
+    `!autoplay [on/off]` - Activa o desactiva el modo autoplay.
+    """
+    await ctx.send(comandos_lista)
+
+
+@bot.command()
+async def repo(ctx):
+    await ctx.send("🔗 Repositorio del bot: https://github.com/bak1-H/BOT_DISCORD_MUSICA")
+
+
+@bot.command()
+async def autoplay(ctx, mode: str = None):
+    guild_id = ctx.guild.id
+
+    if mode is None:
+        state = autoplay_enabled.get(guild_id, False)
+        return await ctx.send(f"🔁 Autoplay está **{'activado' if state else 'desactivado'}**.")
+
+    if mode.lower() == "on":
+        autoplay_enabled[guild_id] = True
+        await ctx.send("🔁 Autoplay activado.")
+    elif mode.lower() == "off":
+        autoplay_enabled[guild_id] = False
+        await ctx.send("⏹️ Autoplay desactivado.")
+    else:
+        await ctx.send("❌ Usa `!autoplay on` o `!autoplay off`.")
 
 
 bot.run(os.getenv("DISCORD_TOKEN"))
