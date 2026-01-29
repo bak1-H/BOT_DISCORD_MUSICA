@@ -1,14 +1,14 @@
-import base64
 import os
 import asyncio
 import random
-import discord
-import yt_dlp
-import lyricsgenius
 import re
 
+import discord
 from discord.ext import commands
 from dotenv import load_dotenv
+
+import yt_dlp
+import lyricsgenius
 
 load_dotenv()
 
@@ -20,29 +20,42 @@ genius = lyricsgenius.Genius(
     verbose=False
 )
 
-# ──────────────────── TOKENS ────────────────────
-PO_TOKEN = os.getenv("YOUTUBE_PO_TOKEN", "").strip()
-VISITOR_DATA = os.getenv("YOUTUBE_VISITOR_DATA", "").strip()
-
-
 # ──────────────────── DISCORD ────────────────────
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# ──────────────────── CONFIG ────────────────────
+# Si YouTube bloquea en Railway, la solución real suele ser PROXY residencial.
+YTDLP_PROXY = os.getenv("YTDLP_PROXY", "").strip() or None
+
+# Evita loops infinitos si YouTube bloquea o yt-dlp falla
+MAX_PLAYNEXT_FAILS = 3
+
 # ──────────────────── YT-DLP ────────────────────
+# Importante: en cloud, web suele ser el más bloqueado.
+# Ponemos fallback: android -> ios -> mweb
 ytdlp_common_opts = {
     "format": "bestaudio/best",
     "noplaylist": True,
     "nocheckcertificate": True,
+    "quiet": True,
+    "no_warnings": True,
+    "socket_timeout": 15,
+    "retries": 2,
+    "fragment_retries": 2,
+    "extractor_retries": 2,
+
+    # JS runtime (ya lo tienes via nixpacks)
     "js_runtimes": {"node": {}},
     "remote_components": {"ejs:github"},
-    "cookiefile": "cookies.txt" if os.path.exists("cookies.txt") else None,
+
+    # Proxy opcional (setear env YTDLP_PROXY en Railway)
+    "proxy": YTDLP_PROXY,
+
     "extractor_args": {
         "youtube": {
-            "player_client": ["android"],
-            "po_token": [f"web+{PO_TOKEN}"] if PO_TOKEN else [],
-            "visitor_data": [VISITOR_DATA] if VISITOR_DATA else [],
+            "player_client": ["android", "ios", "mweb"],
         }
     },
 }
@@ -53,6 +66,7 @@ current_song = {}
 autoplay_enabled = {}
 last_played_query = {}
 last_video_id = {}
+playnext_fail_count = {}
 
 # ──────────────────── HELPERS ────────────────────
 def clean_title_for_lyrics(title: str) -> str:
@@ -103,35 +117,36 @@ async def ytdlp_extract(loop, query: str, is_search: bool = False) -> dict:
 def pick_best_audio_url(info: dict) -> str | None:
     formats = info.get("formats") or []
 
-    # 1️⃣ Preferir audio-only
     audio_only = [
         f for f in formats
         if f.get("acodec") not in (None, "none")
         and f.get("vcodec") == "none"
         and f.get("url")
     ]
-
     if audio_only:
         audio_only.sort(key=lambda x: (x.get("abr") or 0), reverse=True)
         return audio_only[0]["url"]
 
-    # 2️⃣ Fallback seguro: audio + video (itag 18, 22, etc.)
+    # Fallback: si YouTube fuerza SABR y no hay audio-only con url
     fallback = [
         f for f in formats
-        if f.get("acodec") not in (None, "none")
-        and f.get("url")
+        if f.get("acodec") not in (None, "none") and f.get("url")
     ]
-
     if fallback:
         fallback.sort(key=lambda x: (x.get("abr") or 0), reverse=True)
         return fallback[0]["url"]
 
     return None
 
-# ──────────────────── AUTOPLAY ────────────────────
-async def autoplay_next(ctx):
-    gid = ctx.guild.id
 
+def is_youtube_login_block(err: Exception) -> bool:
+    s = str(err).lower()
+    return ("sign in to confirm you’re not a bot" in s) or ("sign in to confirm you're not a bot" in s)
+
+
+# ──────────────────── AUTOPLAY ────────────────────
+async def autoplay_next(ctx) -> bool:
+    gid = ctx.guild.id
     if not autoplay_enabled.get(gid):
         return False
 
@@ -162,10 +177,14 @@ async def autoplay_next(ctx):
         print(f"Autoplay error: {e}")
         return False
 
+
 # ──────────────────── PLAY NEXT ────────────────────
 async def play_next(ctx):
     gid = ctx.guild.id
-    queue = queues.get(gid)
+    queue = queues.get(gid) or []
+
+    # Reset fail counter when queue is not empty and we are going to try play
+    playnext_fail_count.setdefault(gid, 0)
 
     if not queue:
         if await autoplay_next(ctx):
@@ -175,10 +194,14 @@ async def play_next(ctx):
         return
 
     url = normalize_youtube_url(queue.pop(0))
+    queues[gid] = queue  # asegura que quede guardada la cola actualizada
 
     try:
+        if not ctx.voice_client or not ctx.voice_client.is_connected():
+            return
+
         info = await ytdlp_extract(asyncio.get_event_loop(), url)
-        if info.get("entries"):
+        if isinstance(info, dict) and info.get("entries"):
             info = info["entries"][0]
 
         audio_url = pick_best_audio_url(info)
@@ -189,7 +212,6 @@ async def play_next(ctx):
         last_played_query[gid] = current_song[gid]
         last_video_id[gid] = info.get("id")
 
-
         source = discord.FFmpegPCMAudio(
             audio_url,
             before_options=(
@@ -199,18 +221,39 @@ async def play_next(ctx):
                 "-vn"
             )
         )
-        if not ctx.voice_client or not ctx.voice_client.is_connected():
-            return
 
         ctx.voice_client.play(source, after=lambda e: bot.loop.create_task(play_next(ctx)))
         await ctx.send(f"🎶 Reproduciendo: **{current_song[gid]}**")
+        playnext_fail_count[gid] = 0
 
     except Exception as e:
+        playnext_fail_count[gid] = playnext_fail_count.get(gid, 0) + 1
         print(f"Play error: {e}")
+
+        # Si es el bloqueo de YouTube por login/bot-check, avisar claro
+        if is_youtube_login_block(e):
+            await ctx.send(
+                "❌ YouTube bloqueó la reproducción desde Railway (bot-check). "
+                "Solución típica: configurar `YTDLP_PROXY` (proxy residencial) o mover el bot a una IP no bloqueada."
+            )
+            queues[gid] = []
+            if ctx.voice_client:
+                await ctx.voice_client.disconnect()
+            return
+
+        # Evita loop infinito si algo falla siempre
+        if playnext_fail_count[gid] >= MAX_PLAYNEXT_FAILS:
+            await ctx.send("❌ Falló la reproducción varias veces. Deteniendo y limpiando cola.")
+            queues[gid] = []
+            if ctx.voice_client:
+                await ctx.voice_client.disconnect()
+            return
+
+        # intenta la siguiente canción
         await play_next(ctx)
 
-# ──────────────────── COMANDOS ────────────────────
 
+# ──────────────────── COMANDOS ────────────────────
 @bot.command()
 async def play(ctx, *, search: str = None):
     if not search:
@@ -223,16 +266,12 @@ async def play(ctx, *, search: str = None):
         try:
             await ctx.author.voice.channel.connect(timeout=20)
         except asyncio.TimeoutError:
-            return await ctx.send(
-                "❌ No pude conectarme al canal de voz (timeout). Intenta otra vez."
-            )
+            return await ctx.send("❌ No pude conectarme al canal de voz (timeout). Intenta otra vez.")
 
     await ctx.send(f"🔍 Buscando: **{search}**...")
 
-    loop = asyncio.get_event_loop()
     try:
-        info = await ytdlp_extract(loop, search, is_search=True)
-
+        info = await ytdlp_extract(asyncio.get_event_loop(), search, is_search=True)
         entries = info.get("entries") if isinstance(info, dict) else None
         if not entries:
             return await ctx.send("❌ No se encontraron resultados.")
@@ -250,6 +289,11 @@ async def play(ctx, *, search: str = None):
 
     except Exception as e:
         print(f"Error en comando play: {e}")
+        if is_youtube_login_block(e):
+            return await ctx.send(
+                "❌ YouTube bloqueó la búsqueda/reproducción desde Railway (bot-check). "
+                "Prueba con `YTDLP_PROXY` o ejecuta el bot en una IP residencial."
+            )
         await ctx.send("❌ Hubo un error procesando la búsqueda.")
 
 
@@ -301,21 +345,25 @@ async def comandos(ctx):
         "`!stop` - Detiene la reproducción y desconecta el bot.\n"
         "`!lyrics <canción>` - Busca y muestra la letra de una canción.\n"
         "`!autoplay <on/off>` - Activa o desactiva el autoplay.\n"
-        "`!comandos` - Muestra esta ayuda.\n"
-        "`!repo` - Muestra el enlace al repositorio del bot."
-        "`!clear <n>` - Elimina los últimos n mensajes del chat."
+        "`!clear <n>` - Elimina los últimos n mensajes del chat (requiere permisos).\n"
+        "`!repo` - Muestra el enlace al repositorio del bot.\n"
+        "`!comandos` - Muestra esta ayuda."
     )
     await ctx.send(help_text)
+
 
 @bot.command()
 async def repo(ctx):
     await ctx.send("🔗 Repositorio del bot: https://github.com/bak1-H/BOT_DISCORD_MUSICA")
 
-#para eliminar mensajes del chat !clear <num>
+
 @bot.command()
+@commands.has_permissions(manage_messages=True)
 async def clear(ctx, num: int):
+    if num < 1:
+        return await ctx.send("❌ Usa un número mayor a 0.")
     deleted = await ctx.channel.purge(limit=num + 1)
-    await ctx.send(f"🧹 Eliminados {len(deleted)-1} mensajes.", delete_after=5) 
+    await ctx.send(f"🧹 Eliminados {len(deleted) - 1} mensajes.", delete_after=5)
 
 
 @bot.event

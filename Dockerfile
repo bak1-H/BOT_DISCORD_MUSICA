@@ -1,24 +1,26 @@
 FROM python:3.11-slim
 
-# Instalar ffmpeg y dependencias del sistema
+# Dependencias del sistema (ffmpeg + SSL + node 20)
 RUN apt-get update && \
-    apt-get install -y ffmpeg curl && \
+    apt-get install -y --no-install-recommends \
+      ffmpeg \
+      curl \
+      ca-certificates \
+      gnupg && \
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y nodejs && \
+    apt-get install -y --no-install-recommends nodejs && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copiar dependencias e instalar
+# Instalar dependencias Python
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir -U yt-dlp
 
-# FUERZA la actualización de yt-dlp a la última versión de 2026
-RUN pip install --no-cache-dir -U yt-dlp
-
-# Verificar versiones para el log de Railway
-RUN node --version && yt-dlp --version
+# Log de versiones (útil en Railway)
+RUN node --version && python --version && yt-dlp --version && ffmpeg -version
 
 COPY . .
 
