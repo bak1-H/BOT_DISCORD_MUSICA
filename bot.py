@@ -1,19 +1,18 @@
 import base64
 import os
 import asyncio
-import functools
-import lyricsgenius
 import random
 import discord
-from discord.ext import commands
 import yt_dlp
-from dotenv import load_dotenv
+import lyricsgenius
 import re
 
-
+from discord.ext import commands
+from dotenv import load_dotenv
 
 load_dotenv()
 
+# ──────────────────── GENIUS ────────────────────
 genius = lyricsgenius.Genius(
     os.getenv("GENIUS_TOKEN"),
     skip_non_songs=True,
@@ -21,18 +20,20 @@ genius = lyricsgenius.Genius(
     verbose=False
 )
 
+# ──────────────────── TOKENS ────────────────────
 PO_TOKEN = os.getenv("YOUTUBE_PO_TOKEN", "").strip()
 VISITOR_DATA = os.getenv("YOUTUBE_VISITOR_DATA", "").strip()
 
-cookies_b64 = os.getenv("YOUTUBE_COOKIES_B64")
-if cookies_b64:
+if os.getenv("YOUTUBE_COOKIES_B64"):
     with open("cookies.txt", "wb") as f:
-        f.write(base64.b64decode(cookies_b64))
+        f.write(base64.b64decode(os.getenv("YOUTUBE_COOKIES_B64")))
 
+# ──────────────────── DISCORD ────────────────────
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# ──────────────────── YT-DLP ────────────────────
 ytdlp_common_opts = {
     "format": "bestaudio/best",
     "noplaylist": True,
@@ -49,104 +50,48 @@ ytdlp_common_opts = {
     },
 }
 
+# ──────────────────── ESTADO ────────────────────
 queues = {}
 current_song = {}
-
 autoplay_enabled = {}
 last_played_query = {}
+last_video_id = {}
 
+# ──────────────────── HELPERS ────────────────────
 def clean_title_for_lyrics(title: str) -> str:
     if not title:
         return ""
 
     title = title.lower()
-
     patterns = [
-        r"\(.*?\)",            # (Official Video)
-        r"\[.*?\]",            # [Lyrics]
-        r"official video",
-        r"official audio",
-        r"lyrics?",
-        r"audio",
-        r"video",
-        r"hd",
-        r"4k",
-        r"remastered?",
-        r"feat\.?.*",
-        r"ft\.?.*",
-        r"- topic",
-        r"•.*",
+        r"\(.*?\)", r"\[.*?\]", r"official video", r"official audio",
+        r"lyrics?", r"audio", r"video", r"hd", r"4k",
+        r"remastered?", r"feat\.?.*", r"ft\.?.*", r"- topic", r"•.*",
     ]
+    for p in patterns:
+        title = re.sub(p, "", title)
 
-    for pattern in patterns:
-        title = re.sub(pattern, "", title)
-
-    title = re.sub(r"[^\w\s\-]", "", title)  # emojis y símbolos
-    title = re.sub(r"\s{2,}", " ", title)    # espacios dobles
+    title = re.sub(r"[^\w\s\-]", "", title)
+    title = re.sub(r"\s{2,}", " ", title)
     return title.strip()
-
 
 
 def normalize_youtube_url(value: str | None) -> str | None:
     if not value:
         return None
-    if value.startswith("http"):
-        return value
-    return f"https://www.youtube.com/watch?v={value}"
+    return value if value.startswith("http") else f"https://www.youtube.com/watch?v={value}"
 
 
 def build_ytdlp_opts(is_search: bool) -> dict:
     opts = ytdlp_common_opts.copy()
-    opts.update(
-        {
-            "allow_unplayable_formats": True,
-            "check_formats": False,
-            "javascript_executable": "/usr/bin/node",
-        }
-    )
+    opts.update({
+        "allow_unplayable_formats": True,
+        "check_formats": False,
+        "javascript_executable": "/usr/bin/node",
+    })
     if is_search:
-        opts.update(
-            {
-                "default_search": "ytsearch1",
-                "extract_flat": "in_playlist",
-            }
-        )
+        opts.update({"default_search": "ytsearch1", "extract_flat": "in_playlist"})
     return opts
-
-
-async def autoplay_next(ctx):
-    guild_id = ctx.guild.id
-
-    if not autoplay_enabled.get(guild_id):
-        return False
-
-    query = last_played_query.get(guild_id)
-    if not query:
-        return False
-
-    loop = asyncio.get_event_loop()
-
-    try:
-        info = await ytdlp_extract(loop, query, is_search=True)
-        entries = info.get("entries") if isinstance(info, dict) else None
-        if not entries:
-            return False
-
-        candidate = random.choice(entries[:5])
-        url = normalize_youtube_url(
-            candidate.get("webpage_url") or candidate.get("url")
-        )
-
-        if not url:
-            return False
-
-        queues.setdefault(guild_id, []).append(url)
-        return True
-
-    except Exception as e:
-        print(f"Error en autoplay: {e}")
-        return False
-
 
 
 async def ytdlp_extract(loop, query: str, is_search: bool = False) -> dict:
@@ -162,200 +107,151 @@ async def ytdlp_extract(loop, query: str, is_search: bool = False) -> dict:
 
 def pick_best_audio_url(info: dict) -> str | None:
     formats = info.get("formats") or []
-    audio_formats = [
-        f for f in formats if f.get("acodec") not in (None, "none") and f.get("url")
-    ]
-    if audio_formats:
-        audio_formats.sort(key=lambda x: (x.get("abr") or 0), reverse=True)
-        return audio_formats[0]["url"]
+    audio = [f for f in formats if f.get("acodec") not in (None, "none") and f.get("url")]
+    if audio:
+        audio.sort(key=lambda x: (x.get("abr") or 0), reverse=True)
+        return audio[0]["url"]
     return info.get("url")
 
+# ──────────────────── AUTOPLAY ────────────────────
+async def autoplay_next(ctx):
+    gid = ctx.guild.id
 
+    if not autoplay_enabled.get(gid):
+        return False
+
+    query = clean_title_for_lyrics(last_played_query.get(gid, ""))
+    last_id = last_video_id.get(gid)
+    if not query:
+        return False
+
+    try:
+        info = await ytdlp_extract(asyncio.get_event_loop(), query, is_search=True)
+        entries = info.get("entries") if isinstance(info, dict) else None
+        if not entries:
+            return False
+
+        candidates = [e for e in entries[:5] if e.get("id") != last_id]
+        if not candidates:
+            return False
+
+        pick = random.choice(candidates)
+        url = normalize_youtube_url(pick.get("webpage_url") or pick.get("url"))
+        if not url:
+            return False
+
+        queues.setdefault(gid, []).append(url)
+        return True
+
+    except Exception as e:
+        print(f"Autoplay error: {e}")
+        return False
+
+# ──────────────────── PLAY NEXT ────────────────────
 async def play_next(ctx):
-    guild_id = ctx.guild.id
-    queue = queues.get(guild_id)
+    gid = ctx.guild.id
+    queue = queues.get(gid)
 
-    # 🔁 Si la cola está vacía, intenta autoplay
-    if not queue or len(queue) == 0:
+    if not queue:
         if await autoplay_next(ctx):
-            await play_next(ctx)
-            return
-
+            return await play_next(ctx)
         if ctx.voice_client:
             await ctx.voice_client.disconnect()
         return
 
     url = normalize_youtube_url(queue.pop(0))
-    loop = asyncio.get_event_loop()
 
     try:
-        info = await ytdlp_extract(loop, url)
-
-        if isinstance(info, dict) and info.get("entries"):
+        info = await ytdlp_extract(asyncio.get_event_loop(), url)
+        if info.get("entries"):
             info = info["entries"][0]
 
         audio_url = pick_best_audio_url(info)
         if not audio_url:
-            raise RuntimeError("No se encontró una URL de audio reproducible.")
+            raise RuntimeError("No audio")
 
-        ffmpeg_opts = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -vn"
-        source = discord.FFmpegPCMAudio(audio_url, before_options=ffmpeg_opts)
+        current_song[gid] = info.get("title", "Desconocido")
+        last_played_query[gid] = current_song[gid]
+        last_video_id[gid] = info.get("id")
 
-        current_song[guild_id] = info.get("title", "Desconocido")
-        last_played_query[guild_id] = current_song[guild_id]
-
-        ctx.voice_client.play(
-            source,
-            after=lambda e: bot.loop.create_task(play_next(ctx))
+        source = discord.FFmpegPCMAudio(
+            audio_url,
+            before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -vn"
         )
 
-        await ctx.send(f"🎶 Reproduciendo: **{current_song[guild_id]}**")
+        ctx.voice_client.play(source, after=lambda e: bot.loop.create_task(play_next(ctx)))
+        await ctx.send(f"🎶 Reproduciendo: **{current_song[gid]}**")
 
     except Exception as e:
-        print(f"Error en play_next: {e}")
-        await ctx.send(
-            "❌ Error al intentar reproducir esta canción. Pasando a la siguiente..."
-        )
+        print(f"Play error: {e}")
         await play_next(ctx)
 
-
-
+# ──────────────────── COMANDOS ────────────────────
 @bot.command()
-async def play(ctx, *, search: str = None):
-    if not search:
-        return await ctx.send("❌ Escribe el nombre de una canción.")
-
+async def play(ctx, *, search: str):
     if not ctx.voice_client:
         if ctx.author.voice:
             await ctx.author.voice.channel.connect()
         else:
             return await ctx.send("❌ Debes estar en un canal de voz.")
 
-    await ctx.send(f"🔍 Buscando: **{search}**...")
+    info = await ytdlp_extract(asyncio.get_event_loop(), search, is_search=True)
+    entries = info.get("entries")
+    if not entries:
+        return await ctx.send("❌ No se encontraron resultados.")
 
-    loop = asyncio.get_event_loop()
-    try:
-        info = await ytdlp_extract(loop, search, is_search=True)
+    video = entries[0]
+    url = normalize_youtube_url(video.get("webpage_url") or video.get("url"))
+    queues.setdefault(ctx.guild.id, []).append(url)
 
-        entries = info.get("entries") if isinstance(info, dict) else None
-        if not entries:
-            return await ctx.send("❌ No se encontraron resultados.")
-
-        video = entries[0]
-        url = normalize_youtube_url(video.get("webpage_url") or video.get("url"))
-        title = video.get("title", "Canción")
-
-        queues.setdefault(ctx.guild.id, []).append(url)
-
-        if ctx.voice_client.is_playing():
-            await ctx.send(f"✅ En cola: **{title}**")
-        else:
-            await play_next(ctx)
-
-    except Exception as e:
-        print(f"Error en comando play: {e}")
-        await ctx.send("❌ Hubo un error procesando la búsqueda.")
-
-
-@bot.command()
-@commands.has_permissions(manage_messages=True)
-async def clear(ctx, amount: int = 1):
-    if amount < 1:
-        return await ctx.send("❌ Debes indicar un número mayor a 0.")
-
-    await ctx.channel.purge(limit=amount + 1)
-
-
-
-@bot.command()
-async def lyrics(ctx, *, song: str = None):
-    if not song:
-        return await ctx.send("❌ Escribe el nombre de la canción.")
-
-    await ctx.send(f"📄 Buscando letra de **{song}**...")
-
-    try:
-        song_data = genius.search_song(song)
-        if not song_data or not song_data.lyrics:
-            return await ctx.send("❌ No se encontró la letra.")
-
-        lyrics = song_data.lyrics
-        if len(lyrics) > 2000:
-            lyrics = lyrics[:1990] + "..."
-
-        await ctx.send(f"🎶 **{song_data.title} – {song_data.artist}**\n\n{lyrics}")
-
-    except Exception as e:
-        print(f"Error en lyrics: {e}")
-        await ctx.send("❌ Error al obtener la letra.")
+    if not ctx.voice_client.is_playing():
+        await play_next(ctx)
+    else:
+        await ctx.send(f"✅ En cola: **{video.get('title')}**")
 
 
 @bot.command()
 async def skip(ctx):
-    if not ctx.voice_client or not ctx.voice_client.is_playing():
-        return await ctx.send("❌ No hay ninguna canción reproduciéndose.")
-
-    ctx.voice_client.stop()
-    await ctx.send("⏭️ Canción saltada.")
+    if ctx.voice_client and ctx.voice_client.is_playing():
+        ctx.voice_client.stop()
 
 
 @bot.command()
 async def stop(ctx):
-    guild_id = ctx.guild.id
-
-    if not ctx.voice_client:
-        return await ctx.send("❌ No estoy conectado a un canal de voz.")
-
-    queues[guild_id] = []
-
-    if ctx.voice_client.is_playing():
+    queues[ctx.guild.id] = []
+    if ctx.voice_client:
         ctx.voice_client.stop()
-
-    await ctx.voice_client.disconnect()
-    await ctx.send("⏹️ Música detenida y cola limpiada.")
-
-@bot.event
-async def on_ready():
-    print(f"✅ {bot.user} online y listo.")
+        await ctx.voice_client.disconnect()
 
 
 @bot.command()
-async def comandos(ctx):
-    comandos_lista = """
-    🎵 **Comandos Disponibles** 🎵
-    
-    `!play <nombre o URL>` - Reproduce una canción o la añade a la cola.
-    `!skip` - Salta la canción actual.
-    `!stop` - Detiene la música y limpia la cola.
-    `!lyrics <nombre de la canción>` - Muestra la letra de la canción.
-    `!clear <número>` - Limpia mensajes en el canal (requiere permisos).
-    `!repo` - Muestra el enlace al repositorio del bot.
-    `!autoplay [on/off]` - Activa o desactiva el modo autoplay.
-    """
-    await ctx.send(comandos_lista)
+async def lyrics(ctx, *, song: str):
+    title = clean_title_for_lyrics(song)
+    song_data = genius.search_song(title)
+    if not song_data:
+        return await ctx.send("❌ Letra no encontrada.")
 
-
-@bot.command()
-async def repo(ctx):
-    await ctx.send("🔗 Repositorio del bot: https://github.com/bak1-H/BOT_DISCORD_MUSICA")
+    text = song_data.lyrics[:1990]
+    await ctx.send(f"🎶 **{song_data.title} – {song_data.artist}**\n\n{text}")
 
 
 @bot.command()
 async def autoplay(ctx, mode: str = None):
-    guild_id = ctx.guild.id
-
-    if mode is None:
-        state = autoplay_enabled.get(guild_id, False)
-        return await ctx.send(f"🔁 Autoplay está **{'activado' if state else 'desactivado'}**.")
-
-    if mode.lower() == "on":
-        autoplay_enabled[guild_id] = True
+    gid = ctx.guild.id
+    if mode == "on":
+        autoplay_enabled[gid] = True
         await ctx.send("🔁 Autoplay activado.")
-    elif mode.lower() == "off":
-        autoplay_enabled[guild_id] = False
+    elif mode == "off":
+        autoplay_enabled[gid] = False
         await ctx.send("⏹️ Autoplay desactivado.")
     else:
-        await ctx.send("❌ Usa `!autoplay on` o `!autoplay off`.")
+        state = autoplay_enabled.get(gid, False)
+        await ctx.send(f"Autoplay: {'ON' if state else 'OFF'}")
+
+
+@bot.event
+async def on_ready():
+    print(f"✅ {bot.user} listo.")
 
 
 bot.run(os.getenv("DISCORD_TOKEN"))
