@@ -249,6 +249,25 @@ async def autoplay(ctx, mode: str = None):
         await ctx.send(f"Autoplay: {'ON' if state else 'OFF'}")
 
 
+@bot.command()
+async def comandos(ctx):
+    help_text = (
+        "🎵 **Comandos del Bot de Música:**\n"
+        "`!play <canción o URL>` - Reproduce una canción o la añade a la cola.\n"
+        "`!skip` - Salta la canción actual.\n"
+        "`!stop` - Detiene la reproducción y desconecta el bot.\n"
+        "`!lyrics <canción>` - Busca y muestra la letra de una canción.\n"
+        "`!autoplay <on/off>` - Activa o desactiva el autoplay.\n"
+        "`!comandos` - Muestra esta ayuda.\n"
+        "`!repo` - Muestra el enlace al repositorio del bot."
+
+    )
+    await ctx.send(help_text)
+
+@bot.command()
+async def repo(ctx):
+    await ctx.send("🔗 Repositorio del bot: https://github.com/bak1-H/BOT_DISCORD_MUSICA")
+
 @bot.event
 async def on_ready():
     print(f"✅ {bot.user} listo.")
