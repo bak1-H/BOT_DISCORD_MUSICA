@@ -53,7 +53,7 @@ PO_TOKEN = os.getenv("YOUTUBE_PO_TOKEN", "").strip()
 VISITOR_DATA = os.getenv("YOUTUBE_VISITOR_DATA", "").strip()
 
 ytdlp_common_opts = {
-    "format": "bestaudio/best",
+    "format": "bestaudio[acodec!=none]/bestaudio/best",
     "noplaylist": True,
     "nocheckcertificate": True,
     "quiet": True,
@@ -85,6 +85,26 @@ last_video_id = {}
 playnext_fail_count = {}
 
 # ──────────────────── HELPERS ────────────────────
+
+def ffmpeg_headers_from_info(info: dict) -> str:
+    headers = dict(info.get("http_headers") or {})
+
+    # Defaults seguros (por si no vienen)
+    headers.setdefault("User-Agent", "Mozilla/5.0")
+    headers.setdefault("Accept-Language", "en-US,en;q=0.9")
+    headers.setdefault("Referer", "https://www.youtube.com/")
+    headers.setdefault("Origin", "https://www.youtube.com")
+
+    # Armar string CRLF correcto y escapar comillas
+    lines = []
+    for k, v in headers.items():
+        if v is None:
+            continue
+        v = str(v).replace('"', '\\"')
+        lines.append(f"{k}: {v}\r\n")
+
+    return "".join(lines)
+
 def clean_title_for_lyrics(title: str) -> str:
     if not title:
         return ""
