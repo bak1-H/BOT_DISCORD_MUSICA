@@ -18,18 +18,12 @@ COOKIES_FILE = None
 cookies_b64 = os.getenv("YOUTUBE_COOKIES_B64")
 if cookies_b64:
     try:
-        decoded = base64.b64decode(cookies_b64)
-
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
-        tmp.write(decoded)
-        tmp.close()
-
-        COOKIES_FILE = tmp.name
-        print("🍪 Cookies cargadas correctamente desde variable de entorno")
-
+        with open("cookies.txt", "wb") as f:
+            f.write(base64.b64decode(cookies_b64))
+        COOKIES_FILE = "cookies.txt"
+        print("🍪 Cookies cargadas desde variable de entorno")
     except Exception as e:
         print(f"❌ Error cargando cookies: {e}")
-
 
 
 
@@ -54,18 +48,30 @@ YTDLP_PROXY = os.getenv("YTDLP_PROXY", "").strip() or None
 MAX_PLAYNEXT_FAILS = 3
 
 # ──────────────────── YT-DLP ────────────────────
-# Importante: en cloud, web suele ser el más bloqueado.
-# Ponemos fallback: android -> ios -> mweb
+
+PO_TOKEN = os.getenv("YOUTUBE_PO_TOKEN", "").strip()
+VISITOR_DATA = os.getenv("YOUTUBE_VISITOR_DATA", "").strip()
+
 ytdlp_common_opts = {
     "format": "bestaudio/best",
     "noplaylist": True,
     "nocheckcertificate": True,
+    "quiet": True,
+    "no_warnings": True,
+
+    # JS runtime (necesario hoy)
     "js_runtimes": {"node": {}},
     "remote_components": {"ejs:github"},
+
+    # 🍪 Cookies (archivo creado en runtime)
     "cookiefile": COOKIES_FILE,
+
+    # 🔑 SOLO WEB + PO TOKEN
     "extractor_args": {
         "youtube": {
-            "player_client": ["android", "ios", "mweb"],
+            "player_client": ["web"],
+            "po_token": [f"web+{PO_TOKEN}"] if PO_TOKEN else [],
+            "visitor_data": [VISITOR_DATA] if VISITOR_DATA else [],
         }
     },
 }
