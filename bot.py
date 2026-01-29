@@ -219,7 +219,6 @@ async def play_next(ctx):
     gid = ctx.guild.id
     queue = queues.get(gid) or []
 
-    # Reset fail counter when queue is not empty and we are going to try play
     playnext_fail_count.setdefault(gid, 0)
 
     if not queue:
@@ -230,7 +229,7 @@ async def play_next(ctx):
         return
 
     url = normalize_youtube_url(queue.pop(0))
-    queues[gid] = queue  # asegura que quede guardada la cola actualizada
+    queues[gid] = queue
 
     try:
         if not ctx.voice_client or not ctx.voice_client.is_connected():
@@ -248,17 +247,32 @@ async def play_next(ctx):
         last_played_query[gid] = current_song[gid]
         last_video_id[gid] = info.get("id")
 
-        source = discord.FFmpegPCMAudio(
-            audio_url,
-            before_options=(
-                "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
-                "-headers \"User-Agent: Mozilla/5.0\" "
-                "-headers \"Accept-Language: en-US,en;q=0.9\" "
-                "-vn"
-            )
+        # ✅ headers reales (para extraer cookie y user-agent)
+        http_headers = dict(info.get("http_headers") or {})
+        ua = http_headers.get("User-Agent") or http_headers.get("user-agent") or "Mozilla/5.0"
+        cookie = http_headers.get("Cookie") or http_headers.get("cookie")
+
+        # ✅ Solo 1 header, con CRLF FINAL garantizado
+        cookie_header = f"Cookie: {cookie}\r\n" if cookie else ""
+        # (si quieres ser más estricto: si no hay cookie, puedes lanzar error)
+        # if not cookie:
+        #     raise RuntimeError("Missing cookie header from yt-dlp")
+
+        before = (
+            "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
+            f'-user_agent "{ua}" '
+            '-referer "https://www.youtube.com/" '
+            f'-headers "{cookie_header}" '
+            "-vn"
         )
 
-        ctx.voice_client.play(source, after=lambda e: bot.loop.create_task(play_next(ctx)))
+        source = discord.FFmpegPCMAudio(audio_url, before_options=before)
+
+        ctx.voice_client.play(
+            source,
+            after=lambda e: bot.loop.create_task(play_next(ctx))
+        )
+
         await ctx.send(f"🎶 Reproduciendo: **{current_song[gid]}**")
         playnext_fail_count[gid] = 0
 
@@ -266,18 +280,13 @@ async def play_next(ctx):
         playnext_fail_count[gid] = playnext_fail_count.get(gid, 0) + 1
         print(f"Play error: {e}")
 
-        # Si es el bloqueo de YouTube por login/bot-check, avisar claro
         if is_youtube_login_block(e):
-            await ctx.send(
-                "❌ YouTube bloqueó la reproducción desde Railway (bot-check). "
-                "Solución típica: configurar `YTDLP_PROXY` (proxy residencial) o mover el bot a una IP no bloqueada."
-            )
+            await ctx.send("❌ YouTube bloqueó la reproducción (bot-check). Reexporta cookies (rotaron).")
             queues[gid] = []
             if ctx.voice_client:
                 await ctx.voice_client.disconnect()
             return
 
-        # Evita loop infinito si algo falla siempre
         if playnext_fail_count[gid] >= MAX_PLAYNEXT_FAILS:
             await ctx.send("❌ Falló la reproducción varias veces. Deteniendo y limpiando cola.")
             queues[gid] = []
@@ -285,7 +294,6 @@ async def play_next(ctx):
                 await ctx.voice_client.disconnect()
             return
 
-        # intenta la siguiente canción
         await play_next(ctx)
 
 
