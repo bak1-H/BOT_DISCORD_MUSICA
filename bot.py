@@ -177,9 +177,15 @@ async def play_next(ctx):
         last_played_query[gid] = current_song[gid]
         last_video_id[gid] = info.get("id")
 
+
         source = discord.FFmpegPCMAudio(
             audio_url,
-            before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -vn"
+            before_options=(
+                "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
+                "-headers \"User-Agent: Mozilla/5.0\" "
+                "-headers \"Accept-Language: en-US,en;q=0.9\" "
+                "-vn"
+            )
         )
 
         ctx.voice_client.play(source, after=lambda e: bot.loop.create_task(play_next(ctx)))
