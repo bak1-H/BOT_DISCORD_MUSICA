@@ -2,15 +2,36 @@ import os
 import asyncio
 import random
 import re
-
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
-
+import base64
+import tempfile
 import yt_dlp
 import lyricsgenius
 
 load_dotenv()
+
+
+COOKIES_FILE = None
+
+cookies_b64 = os.getenv("YOUTUBE_COOKIES_B64")
+if cookies_b64:
+    try:
+        decoded = base64.b64decode(cookies_b64)
+
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
+        tmp.write(decoded)
+        tmp.close()
+
+        COOKIES_FILE = tmp.name
+        print("🍪 Cookies cargadas correctamente desde variable de entorno")
+
+    except Exception as e:
+        print(f"❌ Error cargando cookies: {e}")
+
+
+
 
 # ──────────────────── GENIUS ────────────────────
 genius = lyricsgenius.Genius(
@@ -39,20 +60,9 @@ ytdlp_common_opts = {
     "format": "bestaudio/best",
     "noplaylist": True,
     "nocheckcertificate": True,
-    "quiet": True,
-    "no_warnings": True,
-    "socket_timeout": 15,
-    "retries": 2,
-    "fragment_retries": 2,
-    "extractor_retries": 2,
-
-    # JS runtime (ya lo tienes via nixpacks)
     "js_runtimes": {"node": {}},
     "remote_components": {"ejs:github"},
-
-    # Proxy opcional (setear env YTDLP_PROXY en Railway)
-    "proxy": YTDLP_PROXY,
-
+    "cookiefile": COOKIES_FILE,
     "extractor_args": {
         "youtube": {
             "player_client": ["android", "ios", "mweb"],
