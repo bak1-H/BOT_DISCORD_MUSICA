@@ -103,16 +103,28 @@ async def ytdlp_extract(loop, query: str, is_search: bool = False) -> dict:
 def pick_best_audio_url(info: dict) -> str | None:
     formats = info.get("formats") or []
 
-    audio_formats = [
+    # 1️⃣ Preferir audio-only
+    audio_only = [
         f for f in formats
         if f.get("acodec") not in (None, "none")
         and f.get("vcodec") == "none"
         and f.get("url")
     ]
 
-    if audio_formats:
-        audio_formats.sort(key=lambda x: (x.get("abr") or 0), reverse=True)
-        return audio_formats[0]["url"]
+    if audio_only:
+        audio_only.sort(key=lambda x: (x.get("abr") or 0), reverse=True)
+        return audio_only[0]["url"]
+
+    # 2️⃣ Fallback seguro: audio + video (itag 18, 22, etc.)
+    fallback = [
+        f for f in formats
+        if f.get("acodec") not in (None, "none")
+        and f.get("url")
+    ]
+
+    if fallback:
+        fallback.sort(key=lambda x: (x.get("abr") or 0), reverse=True)
+        return fallback[0]["url"]
 
     return None
 
@@ -187,6 +199,8 @@ async def play_next(ctx):
                 "-vn"
             )
         )
+        if not ctx.voice_client or not ctx.voice_client.is_connected():
+            return
 
         ctx.voice_client.play(source, after=lambda e: bot.loop.create_task(play_next(ctx)))
         await ctx.send(f"🎶 Reproduciendo: **{current_song[gid]}**")
