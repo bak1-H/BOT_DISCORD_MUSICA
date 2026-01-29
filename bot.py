@@ -8,11 +8,14 @@ import discord
 from discord.ext import commands
 import yt_dlp
 from dotenv import load_dotenv
+import re
+
+
 
 load_dotenv()
 
 genius = lyricsgenius.Genius(
-    os.getenv("GENIUS_API_TOKEN"),
+    os.getenv("GENIUS_TOKEN"),
     skip_non_songs=True,
     remove_section_headers=True,
     verbose=False
@@ -51,6 +54,37 @@ current_song = {}
 
 autoplay_enabled = {}
 last_played_query = {}
+
+def clean_title_for_lyrics(title: str) -> str:
+    if not title:
+        return ""
+
+    title = title.lower()
+
+    patterns = [
+        r"\(.*?\)",            # (Official Video)
+        r"\[.*?\]",            # [Lyrics]
+        r"official video",
+        r"official audio",
+        r"lyrics?",
+        r"audio",
+        r"video",
+        r"hd",
+        r"4k",
+        r"remastered?",
+        r"feat\.?.*",
+        r"ft\.?.*",
+        r"- topic",
+        r"•.*",
+    ]
+
+    for pattern in patterns:
+        title = re.sub(pattern, "", title)
+
+    title = re.sub(r"[^\w\s\-]", "", title)  # emojis y símbolos
+    title = re.sub(r"\s{2,}", " ", title)    # espacios dobles
+    return title.strip()
+
 
 
 def normalize_youtube_url(value: str | None) -> str | None:
