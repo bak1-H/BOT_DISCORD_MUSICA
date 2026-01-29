@@ -312,14 +312,29 @@ async def stop(ctx):
 
 
 @bot.command()
-async def lyrics(ctx, *, song: str):
-    title = clean_title_for_lyrics(song)
-    song_data = genius.search_song(title)
-    if not song_data:
-        return await ctx.send("❌ Letra no encontrada.")
+async def lyrics(ctx, *, song: str = None):
+    if not song:
+        song = current_song.get(ctx.guild.id)
 
-    text = song_data.lyrics[:1990]
-    await ctx.send(f"🎶 **{song_data.title} – {song_data.artist}**\n\n{text}")
+    if not song:
+        return await ctx.send("❌ Escribe el nombre de la canción o reproduce una primero.")
+
+    title = clean_title_for_lyrics(song)
+
+    try:
+        song_data = genius.search_song(title)
+        if not song_data or not song_data.lyrics:
+            return await ctx.send("❌ Letra no encontrada.")
+
+        text = song_data.lyrics
+        if len(text) > 2000:
+            text = text[:1990] + "..."
+
+        await ctx.send(f"🎶 **{song_data.title} – {song_data.artist}**\n\n{text}")
+
+    except Exception as e:
+        print(f"Lyrics error: {e}")
+        await ctx.send("❌ Error al obtener la letra.")
 
 
 @bot.command()
