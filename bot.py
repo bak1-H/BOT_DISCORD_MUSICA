@@ -152,27 +152,17 @@ async def ytdlp_extract(loop, query: str, is_search: bool = False) -> dict:
 
 def pick_best_audio_url(info: dict) -> str | None:
     formats = info.get("formats") or []
-
     audio_only = [
         f for f in formats
         if f.get("acodec") not in (None, "none")
         and f.get("vcodec") == "none"
         and f.get("url")
     ]
-    if audio_only:
-        audio_only.sort(key=lambda x: (x.get("abr") or 0), reverse=True)
-        return audio_only[0]["url"]
+    if not audio_only:
+        return None
 
-    # Fallback: si YouTube fuerza SABR y no hay audio-only con url
-    fallback = [
-        f for f in formats
-        if f.get("acodec") not in (None, "none") and f.get("url")
-    ]
-    if fallback:
-        fallback.sort(key=lambda x: (x.get("abr") or 0), reverse=True)
-        return fallback[0]["url"]
-
-    return None
+    audio_only.sort(key=lambda x: (x.get("abr") or 0), reverse=True)
+    return audio_only[0]["url"]
 
 
 def is_youtube_login_block(err: Exception) -> bool:
@@ -258,14 +248,14 @@ async def play_next(ctx):
         # if not cookie:
         #     raise RuntimeError("Missing cookie header from yt-dlp")
 
+        hdr = ffmpeg_headers_from_info(info)
         before = (
             "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
-            f'-user_agent "{ua}" '
+            f'-headers "{hdr}" '
             '-referer "https://www.youtube.com/" '
-            f'-headers "{cookie_header}" '
+            '-user_agent "Mozilla/5.0" '
             "-vn"
         )
-
         source = discord.FFmpegPCMAudio(audio_url, before_options=before)
 
         ctx.voice_client.play(
