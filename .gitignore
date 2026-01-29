@@ -1,0 +1,4 @@
+# .gitignore
+cookies.txt
+__pycache__/
+.env
