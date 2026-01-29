@@ -40,7 +40,7 @@ ytdlp_common_opts = {
     "cookiefile": "cookies.txt" if os.path.exists("cookies.txt") else None,
     "extractor_args": {
         "youtube": {
-            "player_client": ["web"],
+            "player_client": ["android"],
             "po_token": [f"web+{PO_TOKEN}"] if PO_TOKEN else [],
             "visitor_data": [VISITOR_DATA] if VISITOR_DATA else [],
         }
@@ -210,27 +210,47 @@ async def play_next(ctx):
         await play_next(ctx)
 
 # ──────────────────── COMANDOS ────────────────────
+
 @bot.command()
-async def play(ctx, *, search: str):
+async def play(ctx, *, search: str = None):
+    if not search:
+        return await ctx.send("❌ Escribe el nombre de una canción.")
+
+    if not ctx.author.voice:
+        return await ctx.send("❌ Debes estar en un canal de voz.")
+
     if not ctx.voice_client:
-        if ctx.author.voice:
-            await ctx.author.voice.channel.connect()
+        try:
+            await ctx.author.voice.channel.connect(timeout=20)
+        except asyncio.TimeoutError:
+            return await ctx.send(
+                "❌ No pude conectarme al canal de voz (timeout). Intenta otra vez."
+            )
+
+    await ctx.send(f"🔍 Buscando: **{search}**...")
+
+    loop = asyncio.get_event_loop()
+    try:
+        info = await ytdlp_extract(loop, search, is_search=True)
+
+        entries = info.get("entries") if isinstance(info, dict) else None
+        if not entries:
+            return await ctx.send("❌ No se encontraron resultados.")
+
+        video = entries[0]
+        url = normalize_youtube_url(video.get("webpage_url") or video.get("url"))
+        title = video.get("title", "Canción")
+
+        queues.setdefault(ctx.guild.id, []).append(url)
+
+        if ctx.voice_client.is_playing():
+            await ctx.send(f"✅ En cola: **{title}**")
         else:
-            return await ctx.send("❌ Debes estar en un canal de voz.")
+            await play_next(ctx)
 
-    info = await ytdlp_extract(asyncio.get_event_loop(), search, is_search=True)
-    entries = info.get("entries")
-    if not entries:
-        return await ctx.send("❌ No se encontraron resultados.")
-
-    video = entries[0]
-    url = normalize_youtube_url(video.get("webpage_url") or video.get("url"))
-    queues.setdefault(ctx.guild.id, []).append(url)
-
-    if not ctx.voice_client.is_playing():
-        await play_next(ctx)
-    else:
-        await ctx.send(f"✅ En cola: **{video.get('title')}**")
+    except Exception as e:
+        print(f"Error en comando play: {e}")
+        await ctx.send("❌ Hubo un error procesando la búsqueda.")
 
 
 @bot.command()
