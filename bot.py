@@ -24,9 +24,6 @@ genius = lyricsgenius.Genius(
 PO_TOKEN = os.getenv("YOUTUBE_PO_TOKEN", "").strip()
 VISITOR_DATA = os.getenv("YOUTUBE_VISITOR_DATA", "").strip()
 
-if os.getenv("YOUTUBE_COOKIES_B64"):
-    with open("cookies.txt", "wb") as f:
-        f.write(base64.b64decode(os.getenv("YOUTUBE_COOKIES_B64")))
 
 # ──────────────────── DISCORD ────────────────────
 intents = discord.Intents.default()
@@ -84,13 +81,11 @@ def normalize_youtube_url(value: str | None) -> str | None:
 
 def build_ytdlp_opts(is_search: bool) -> dict:
     opts = ytdlp_common_opts.copy()
-    opts.update({
-        "allow_unplayable_formats": True,
-        "check_formats": False,
-        "javascript_executable": "/usr/bin/node",
-    })
     if is_search:
-        opts.update({"default_search": "ytsearch1", "extract_flat": "in_playlist"})
+        opts.update({
+            "default_search": "ytsearch1",
+            "extract_flat": "in_playlist",
+        })
     return opts
 
 
@@ -107,11 +102,19 @@ async def ytdlp_extract(loop, query: str, is_search: bool = False) -> dict:
 
 def pick_best_audio_url(info: dict) -> str | None:
     formats = info.get("formats") or []
-    audio = [f for f in formats if f.get("acodec") not in (None, "none") and f.get("url")]
-    if audio:
-        audio.sort(key=lambda x: (x.get("abr") or 0), reverse=True)
-        return audio[0]["url"]
-    return info.get("url")
+
+    audio_formats = [
+        f for f in formats
+        if f.get("acodec") not in (None, "none")
+        and f.get("vcodec") == "none"
+        and f.get("url")
+    ]
+
+    if audio_formats:
+        audio_formats.sort(key=lambda x: (x.get("abr") or 0), reverse=True)
+        return audio_formats[0]["url"]
+
+    return None
 
 # ──────────────────── AUTOPLAY ────────────────────
 async def autoplay_next(ctx):
@@ -260,13 +263,20 @@ async def comandos(ctx):
         "`!autoplay <on/off>` - Activa o desactiva el autoplay.\n"
         "`!comandos` - Muestra esta ayuda.\n"
         "`!repo` - Muestra el enlace al repositorio del bot."
-
+        "`!clear <n>` - Elimina los últimos n mensajes del chat."
     )
     await ctx.send(help_text)
 
 @bot.command()
 async def repo(ctx):
     await ctx.send("🔗 Repositorio del bot: https://github.com/bak1-H/BOT_DISCORD_MUSICA")
+
+#para eliminar mensajes del chat !clear <num>
+@bot.command()
+async def clear(ctx, num: int):
+    deleted = await ctx.channel.purge(limit=num + 1)
+    await ctx.send(f"🧹 Eliminados {len(deleted)-1} mensajes.", delete_after=5) 
+
 
 @bot.event
 async def on_ready():
