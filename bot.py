@@ -6,7 +6,6 @@ import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 import base64
-import tempfile
 import yt_dlp
 import lyricsgenius
 
@@ -58,6 +57,7 @@ ytdlp_common_opts = {
     "nocheckcertificate": True,
     "quiet": True,
     "no_warnings": True,
+    "proxy": YTDLP_PROXY,
 
     # JS runtime (necesario hoy)
     "js_runtimes": {"node": {}},
@@ -237,17 +237,6 @@ async def play_next(ctx):
         last_played_query[gid] = current_song[gid]
         last_video_id[gid] = info.get("id")
 
-        # ✅ headers reales (para extraer cookie y user-agent)
-        http_headers = dict(info.get("http_headers") or {})
-        ua = http_headers.get("User-Agent") or http_headers.get("user-agent") or "Mozilla/5.0"
-        cookie = http_headers.get("Cookie") or http_headers.get("cookie")
-
-        # ✅ Solo 1 header, con CRLF FINAL garantizado
-        cookie_header = f"Cookie: {cookie}\r\n" if cookie else ""
-        # (si quieres ser más estricto: si no hay cookie, puedes lanzar error)
-        # if not cookie:
-        #     raise RuntimeError("Missing cookie header from yt-dlp")
-
         hdr = ffmpeg_headers_from_info(info)
         before = (
             "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
@@ -301,6 +290,9 @@ async def play(ctx, *, search: str = None):
             await ctx.author.voice.channel.connect(timeout=20)
         except asyncio.TimeoutError:
             return await ctx.send("❌ No pude conectarme al canal de voz (timeout). Intenta otra vez.")
+        except (discord.Forbidden, discord.HTTPException, discord.ClientException) as e:
+            print(f"Voice connect error: {e}")
+            return await ctx.send("❌ No pude conectarme al canal de voz (permisos/capacidad).")
 
     await ctx.send(f"🔍 Buscando: **{search}**...")
 
@@ -316,7 +308,7 @@ async def play(ctx, *, search: str = None):
 
         queues.setdefault(ctx.guild.id, []).append(url)
 
-        if ctx.voice_client.is_playing():
+        if ctx.voice_client and ctx.voice_client.is_playing():
             await ctx.send(f"✅ En cola: **{title}**")
         else:
             await play_next(ctx)
@@ -356,7 +348,8 @@ async def lyrics(ctx, *, song: str = None):
     title = clean_title_for_lyrics(song)
 
     try:
-        song_data = genius.search_song(title)
+        loop = asyncio.get_event_loop()
+        song_data = await loop.run_in_executor(None, lambda: genius.search_song(title))
         if not song_data or not song_data.lyrics:
             return await ctx.send("❌ Letra no encontrada.")
 
