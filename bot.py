@@ -248,10 +248,9 @@ async def play_next(ctx):
             "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
             f'-headers "{hdr}" '
             '-referer "https://www.youtube.com/" '
-            '-user_agent "Mozilla/5.0" '
-            "-vn"
+            '-user_agent "Mozilla/5.0"'
         )
-        source = discord.FFmpegPCMAudio(audio_url, before_options=before)
+        source = discord.FFmpegPCMAudio(audio_url, before_options=before, options="-vn")
 
         ctx.voice_client.play(
             source,
