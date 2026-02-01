@@ -162,13 +162,17 @@ def pick_best_audio_url(info: dict) -> str | None:
         audio_only.sort(key=lambda x: (x.get("abr") or 0), reverse=True)
         return audio_only[0]["url"]
 
-    # Fallback: toma cualquier formato con URL (mejor que fallar)
-    if formats:
-        fallback = next((f.get("url") for f in formats if f.get("url")), None)
-        if fallback:
-            return fallback
+    # Fallback: formatos con audio+video (asegura audio presente)
+    av_with_audio = [
+        f for f in formats
+        if f.get("acodec") not in (None, "none")
+        and f.get("url")
+    ]
+    if av_with_audio:
+        av_with_audio.sort(key=lambda x: (x.get("tbr") or 0), reverse=True)
+        return av_with_audio[0]["url"]
 
-    return info.get("url")
+    return None
 
 
 def is_youtube_login_block(err: Exception) -> bool:
