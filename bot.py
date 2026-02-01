@@ -158,11 +158,17 @@ def pick_best_audio_url(info: dict) -> str | None:
         and f.get("vcodec") == "none"
         and f.get("url")
     ]
-    if not audio_only:
-        return None
+    if audio_only:
+        audio_only.sort(key=lambda x: (x.get("abr") or 0), reverse=True)
+        return audio_only[0]["url"]
 
-    audio_only.sort(key=lambda x: (x.get("abr") or 0), reverse=True)
-    return audio_only[0]["url"]
+    # Fallback: toma cualquier formato con URL (mejor que fallar)
+    if formats:
+        fallback = next((f.get("url") for f in formats if f.get("url")), None)
+        if fallback:
+            return fallback
+
+    return info.get("url")
 
 
 def is_youtube_login_block(err: Exception) -> bool:
@@ -231,7 +237,7 @@ async def play_next(ctx):
 
         audio_url = pick_best_audio_url(info)
         if not audio_url:
-            raise RuntimeError("No audio")
+            raise RuntimeError("No audio URL disponible (formats vacíos)")
 
         current_song[gid] = info.get("title", "Desconocido")
         last_played_query[gid] = current_song[gid]
