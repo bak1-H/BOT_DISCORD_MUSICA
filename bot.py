@@ -258,6 +258,9 @@ async def play_next(ctx):
     except Exception as e:
         playnext_fail_count[gid] = playnext_fail_count.get(gid, 0) + 1
         print(f"Play error: {e}")
+        # Ayuda a diagnosticar por qué se corta la llamada
+        if playnext_fail_count[gid] == 1:
+            await ctx.send(f"❌ Error al reproducir: {e}")
 
         if is_youtube_login_block(e):
             await ctx.send("❌ YouTube bloqueó la reproducción (bot-check). Reexporta cookies (rotaron).")
