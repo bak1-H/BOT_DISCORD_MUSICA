@@ -50,8 +50,8 @@ MAX_PLAYNEXT_FAILS = 3
 
 # ──────────────────── RADIO ────────────────────
 RADIO_DEFAULT_SEEDS = [
-    "lofi hip hop", "pop hits", "rock classics", "edm mix", "latin pop",
-    "rap hits", "indie chill", "jazz instrumental",
+    "lofi hip hop", "pop hits", "rock classics", "edm mix","k-pop",
+    "rap hits","trap-argentina,"reggaeton-old","j-pop","nightcore mix","opening anime",
 ]
 RADIO_SEARCH_SIZE = 12
 RADIO_HISTORY_SIZE = 20
