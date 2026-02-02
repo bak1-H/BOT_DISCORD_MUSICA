@@ -2,6 +2,7 @@ import os
 import asyncio
 import random
 import re
+import copy
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
@@ -50,6 +51,7 @@ MAX_PLAYNEXT_FAILS = 3
 
 PO_TOKEN = os.getenv("YOUTUBE_PO_TOKEN", "").strip()
 VISITOR_DATA = os.getenv("YOUTUBE_VISITOR_DATA", "").strip()
+YT_CLIENTS = ["web", "android", "ios"]
 
 ytdlp_common_opts = {
     "format": "bestaudio[acodec!=none]/bestaudio/best",
@@ -129,8 +131,16 @@ def normalize_youtube_url(value: str | None) -> str | None:
     return value if value.startswith("http") else f"https://www.youtube.com/watch?v={value}"
 
 
-def build_ytdlp_opts(is_search: bool) -> dict:
+def build_ytdlp_opts(is_search: bool, client: str | None = None) -> dict:
     opts = ytdlp_common_opts.copy()
+    opts["extractor_args"] = copy.deepcopy(ytdlp_common_opts.get("extractor_args", {}))
+
+    # Seleccionar client (web por defecto) y, si hay PO token, combinarlo
+    base_client = client or "web"
+    yt_args = opts["extractor_args"].setdefault("youtube", {})
+    yt_args["player_client"] = [base_client]
+    yt_args["po_token"] = [f"{base_client}+{PO_TOKEN}"] if PO_TOKEN else []
+
     if is_search:
         opts.update({
             "default_search": "ytsearch1",
@@ -139,15 +149,37 @@ def build_ytdlp_opts(is_search: bool) -> dict:
     return opts
 
 
-async def ytdlp_extract(loop, query: str, is_search: bool = False) -> dict:
+async def ytdlp_extract(loop, query: str, is_search: bool = False, client: str | None = None) -> dict:
     os.environ["YT_DLP_JS_RUNTIME"] = "node"
-    opts = build_ytdlp_opts(is_search)
+    opts = build_ytdlp_opts(is_search, client)
 
     def _extract():
         with yt_dlp.YoutubeDL(opts) as ydl:
             return ydl.extract_info(query, download=False)
 
     return await loop.run_in_executor(None, _extract)
+
+
+async def extract_audio_with_fallback(loop, query: str) -> tuple[dict, str, str]:
+    """Intenta extraer el stream probando varios player_client (web → android → ios)."""
+    last_error = None
+    for client in YT_CLIENTS:
+        try:
+            info = await ytdlp_extract(loop, query, is_search=False, client=client)
+            if isinstance(info, dict) and info.get("entries"):
+                info = info["entries"][0]
+
+            audio_url = pick_best_audio_url(info)
+            if audio_url:
+                return info, audio_url, client
+
+        except Exception as e:
+            last_error = e
+            continue
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("No se obtuvo un audio URL con ningún client")
 
 
 def pick_best_audio_url(info: dict) -> str | None:
@@ -235,13 +267,7 @@ async def play_next(ctx):
         if not ctx.voice_client or not ctx.voice_client.is_connected():
             return
 
-        info = await ytdlp_extract(asyncio.get_event_loop(), url)
-        if isinstance(info, dict) and info.get("entries"):
-            info = info["entries"][0]
-
-        audio_url = pick_best_audio_url(info)
-        if not audio_url:
-            raise RuntimeError("No audio URL disponible (formats vacíos)")
+        info, audio_url, client_used = await extract_audio_with_fallback(asyncio.get_event_loop(), url)
 
         current_song[gid] = info.get("title", "Desconocido")
         last_played_query[gid] = current_song[gid]
