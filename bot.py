@@ -3,6 +3,7 @@ import asyncio
 import random
 import re
 import copy
+from collections import deque
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
@@ -47,6 +48,14 @@ YTDLP_PROXY = os.getenv("YTDLP_PROXY", "").strip() or None
 # Evita loops infinitos si YouTube bloquea o yt-dlp falla
 MAX_PLAYNEXT_FAILS = 3
 
+# ──────────────────── RADIO ────────────────────
+RADIO_DEFAULT_SEEDS = [
+    "lofi hip hop", "pop hits", "rock classics", "edm mix", "latin pop",
+    "rap hits", "indie chill", "jazz instrumental",
+]
+RADIO_SEARCH_SIZE = 12
+RADIO_HISTORY_SIZE = 20
+
 # ──────────────────── YT-DLP ────────────────────
 
 PO_TOKEN = os.getenv("YOUTUBE_PO_TOKEN", "").strip()
@@ -85,6 +94,10 @@ autoplay_enabled = {}
 last_played_query = {}
 last_video_id = {}
 playnext_fail_count = {}
+radio_enabled = {}
+radio_seed = {}
+radio_pool = {}
+radio_recent_history = {}
 
 # ──────────────────── HELPERS ────────────────────
 
@@ -152,6 +165,19 @@ def build_ytdlp_opts(is_search: bool, client: str | None = None) -> dict:
 async def ytdlp_extract(loop, query: str, is_search: bool = False, client: str | None = None) -> dict:
     os.environ["YT_DLP_JS_RUNTIME"] = "node"
     opts = build_ytdlp_opts(is_search, client)
+
+    def _extract():
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            return ydl.extract_info(query, download=False)
+
+    return await loop.run_in_executor(None, _extract)
+
+
+async def ytdlp_search(loop, query: str, limit: int = 8, client: str | None = None) -> dict:
+    """Búsqueda con número variable de resultados (para radio)."""
+    os.environ["YT_DLP_JS_RUNTIME"] = "node"
+    opts = build_ytdlp_opts(is_search=True, client=client)
+    opts["default_search"] = f"ytsearch{limit}"
 
     def _extract():
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -246,6 +272,75 @@ async def autoplay_next(ctx) -> bool:
         return False
 
 
+# ──────────────────── RADIO ────────────────────
+def get_radio_history(gid: int) -> deque:
+    return radio_recent_history.setdefault(gid, deque(maxlen=RADIO_HISTORY_SIZE))
+
+
+async def radio_refill_pool(ctx) -> bool:
+    gid = ctx.guild.id
+    if not radio_enabled.get(gid):
+        return False
+
+    seed = radio_seed.get(gid) or random.choice(RADIO_DEFAULT_SEEDS)
+    try:
+        info = await ytdlp_search(asyncio.get_event_loop(), seed, limit=RADIO_SEARCH_SIZE)
+    except Exception as e:
+        print(f"Radio search error: {e}")
+        return False
+
+    entries = info.get("entries") if isinstance(info, dict) else None
+    if not entries:
+        return False
+
+    pool = radio_pool.setdefault(gid, [])
+    history = get_radio_history(gid)
+    added = 0
+
+    for entry in entries:
+        vid = entry.get("id")
+        url = normalize_youtube_url(entry.get("webpage_url") or entry.get("url"))
+        title = entry.get("title") or "Canción"
+        if not url or not vid or vid in history:
+            continue
+        pool.append({"url": url, "title": title, "id": vid})
+        added += 1
+
+    if pool:
+        random.shuffle(pool)
+
+    return added > 0
+
+
+async def radio_enqueue_next(ctx, announce: bool = True) -> bool:
+    gid = ctx.guild.id
+    if not radio_enabled.get(gid):
+        return False
+
+    pool = radio_pool.setdefault(gid, [])
+    history = get_radio_history(gid)
+
+    if not pool:
+        ok = await radio_refill_pool(ctx)
+        if not ok:
+            if announce:
+                await ctx.send("❌ No se pudieron conseguir temas para el modo radio.")
+            return False
+
+    if not pool:
+        return False
+
+    track = pool.pop()
+    queues.setdefault(gid, []).append(track["url"])
+    if track.get("id"):
+        history.append(track["id"])
+
+    if announce:
+        await ctx.send(f"📻 Añadido desde radio: **{track.get('title', 'Canción')}**")
+
+    return True
+
+
 # ──────────────────── PLAY NEXT ────────────────────
 async def play_next(ctx):
     gid = ctx.guild.id
@@ -255,6 +350,8 @@ async def play_next(ctx):
 
     if not queue:
         if await autoplay_next(ctx):
+            return await play_next(ctx)
+        if await radio_enqueue_next(ctx, announce=False):
             return await play_next(ctx)
         if ctx.voice_client:
             await ctx.voice_client.disconnect()
@@ -417,6 +514,67 @@ async def autoplay(ctx, mode: str = None):
 
 
 @bot.command()
+async def radio(ctx, mode: str = None, *, seed: str = None):
+    gid = ctx.guild.id
+    mode = (mode or "").lower()
+
+    if mode == "on":
+        if not ctx.author.voice:
+            return await ctx.send("❌ Debes estar en un canal de voz.")
+
+        if not ctx.voice_client:
+            try:
+                await ctx.author.voice.channel.connect(timeout=20)
+            except asyncio.TimeoutError:
+                return await ctx.send("❌ No pude conectarme al canal de voz (timeout). Intenta otra vez.")
+            except (discord.Forbidden, discord.HTTPException, discord.ClientException) as e:
+                print(f"Voice connect error: {e}")
+                return await ctx.send("❌ No pude conectarme al canal de voz (permisos/capacidad).")
+
+        radio_enabled[gid] = True
+        radio_seed[gid] = seed.strip() if seed else None
+        radio_pool[gid] = []
+        get_radio_history(gid).clear()
+
+        msg = "📻 Radio activada"
+        if seed:
+            msg += f" con semilla: **{seed}**"
+        await ctx.send(msg)
+
+        if (not queues.get(gid)) and (not ctx.voice_client.is_playing()):
+            if await radio_enqueue_next(ctx, announce=False):
+                await play_next(ctx)
+        return
+
+    if mode == "off":
+        radio_enabled[gid] = False
+        radio_seed[gid] = None
+        radio_pool[gid] = []
+        get_radio_history(gid).clear()
+        return await ctx.send("⏹️ Radio desactivada.")
+
+    if mode == "status":
+        enabled = radio_enabled.get(gid, False)
+        seed_text = radio_seed.get(gid) or "aleatoria"
+        pool_size = len(radio_pool.get(gid, []))
+        return await ctx.send(
+            f"📻 Radio: {'ON' if enabled else 'OFF'}\n"
+            f"Semilla: {seed_text}\n"
+            f"Pool pendiente: {pool_size} temas"
+        )
+
+    if mode == "skip":
+        if ctx.voice_client and ctx.voice_client.is_playing():
+            ctx.voice_client.stop()
+            return await ctx.send("⏭️ Saltando y buscando otro tema de radio...")
+        if await radio_enqueue_next(ctx):
+            await play_next(ctx)
+        return
+
+    await ctx.send("Uso: `!radio on [semilla]`, `!radio off`, `!radio status`, `!radio skip`")
+
+
+@bot.command()
 async def comandos(ctx):
     help_text = (
         "🎵 **Comandos del Bot de Música:**\n"
@@ -425,6 +583,7 @@ async def comandos(ctx):
         "`!stop` - Detiene la reproducción y desconecta el bot.\n"
         "`!lyrics <canción>` - Busca y muestra la letra de una canción.\n"
         "`!autoplay <on/off>` - Activa o desactiva el autoplay.\n"
+        "`!radio <on/off/status/skip> [semilla]` - Modo radio con canciones aleatorias.\n"
         "`!clear <n>` - Elimina los últimos n mensajes del chat (requiere permisos).\n"
         "`!repo` - Muestra el enlace al repositorio del bot.\n"
         "`!comandos` - Muestra esta ayuda."
