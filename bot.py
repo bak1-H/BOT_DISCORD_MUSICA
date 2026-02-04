@@ -63,12 +63,13 @@ VISITOR_DATA = os.getenv("YOUTUBE_VISITOR_DATA", "").strip()
 YT_CLIENTS = ["web", "android", "ios"]
 
 ytdlp_common_opts = {
-    "format": "bestaudio[acodec!=none]/bestaudio/best",
+    "format": "bestaudio/best",
     "noplaylist": True,
     "nocheckcertificate": True,
     "quiet": True,
     "no_warnings": True,
     "proxy": YTDLP_PROXY,
+    "extract_flat": False,
 
     # JS runtime (necesario hoy)
     "js_runtimes": {"node": {}},
