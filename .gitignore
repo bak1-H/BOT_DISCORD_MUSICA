@@ -2,3 +2,6 @@
 cookies.txt
 __pycache__/
 .env
+ffmpeg.exe
+ffprobe.exe
+yt-dlp.exe

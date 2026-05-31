@@ -1,5 +1,6 @@
-discord.py
+discord.py>=2.7.1
 PyNaCl
 python-dotenv
 lyricsgenius
 yt-dlp[default]
+davey

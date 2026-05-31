@@ -3,6 +3,7 @@ import asyncio
 import random
 import re
 import copy
+import traceback
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
@@ -13,6 +14,15 @@ import lyricsgenius
 load_dotenv()
 
 os.environ["YT_DLP_JS_RUNTIME"] = "node"
+
+# Agrega ffmpeg local al PATH si no está disponible globalmente
+import shutil
+import subprocess
+if not shutil.which("ffmpeg"):
+    _local_ffmpeg = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ffmpeg.exe")
+    if os.path.exists(_local_ffmpeg):
+        os.environ["PATH"] = os.path.dirname(_local_ffmpeg) + os.pathsep + os.environ["PATH"]
+        print(f"[ffmpeg] usando binario local: {_local_ffmpeg}")
 
 # ──────────────────── COOKIES ────────────────────
 COOKIES_FILE = None
@@ -62,8 +72,8 @@ _YTDLP_BASE = {
 queues: dict[int, list[tuple[str, str]]] = {}
 # current_song[gid]: {"title", "url", "thumbnail", "duration", "uploader"}
 current_song: dict[int, dict] = {}
-autoplay_enabled: dict[int, bool] = {}
-last_played_query: dict[int, str] = {}
+radio_query: dict[int, str | None] = {}       # contexto activo por servidor
+radio_played: dict[int, set[str]] = {}         # IDs reproducidos para no repetir
 last_video_id: dict[int, str] = {}
 playnext_fail_count: dict[int, int] = {}
 
@@ -76,21 +86,6 @@ def format_duration(seconds) -> str:
     h, m = divmod(m, 60)
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
-
-def ffmpeg_headers_from_info(info: dict) -> str:
-    headers = dict(info.get("http_headers") or {})
-    headers.setdefault("User-Agent", "Mozilla/5.0")
-    headers.setdefault("Accept-Language", "en-US,en;q=0.9")
-    headers.setdefault("Referer", "https://www.youtube.com/")
-    headers.setdefault("Origin", "https://www.youtube.com")
-
-    lines = []
-    for k, v in headers.items():
-        if v is None:
-            continue
-        v = str(v).replace('"', '\\"')
-        lines.append(f"{k}: {v}\r\n")
-    return "".join(lines)
 
 
 def clean_title_for_lyrics(title: str) -> str:
@@ -115,13 +110,12 @@ def normalize_youtube_url(value: str | None) -> str | None:
 
 def build_ytdlp_opts(is_search: bool, client: str = "web", search_count: int = 1) -> dict:
     opts = copy.deepcopy(_YTDLP_BASE)
-    opts["extractor_args"] = {
-        "youtube": {
-            "player_client": [client],
-            "po_token": [f"{client}+{PO_TOKEN}"] if PO_TOKEN else [],
-            "visitor_data": [VISITOR_DATA] if VISITOR_DATA else [],
-        }
-    }
+    yt_args: dict = {"player_client": [client]}
+    if PO_TOKEN:
+        yt_args["po_token"] = [f"{client}+{PO_TOKEN}"]
+    if VISITOR_DATA:
+        yt_args["visitor_data"] = [VISITOR_DATA]
+    opts["extractor_args"] = {"youtube": yt_args}
     if is_search:
         opts["default_search"] = f"ytsearch{search_count}"
         opts["extract_flat"] = "in_playlist"
@@ -209,33 +203,47 @@ def pick_best_audio_url(info: dict) -> str | None:
     return None
 
 
-# ──────────────────── AUTOPLAY ────────────────────
+# ──────────────────── RADIO ────────────────────
 
-async def autoplay_next(ctx) -> bool:
+async def radio_next(ctx) -> bool:
     gid = ctx.guild.id
-    if not autoplay_enabled.get(gid):
-        return False
-    query = clean_title_for_lyrics(last_played_query.get(gid, ""))
-    last_id = last_video_id.get(gid)
+    query = radio_query.get(gid)
     if not query:
         return False
+
+    played = radio_played.setdefault(gid, set())
+    last_id = last_video_id.get(gid)
+
     try:
         info = await ytdlp_extract(query, is_search=True, search_count=5)
         entries = info.get("entries") if isinstance(info, dict) else None
         if not entries:
             return False
-        candidates = [e for e in entries if e.get("id") != last_id]
+
+        candidates = [
+            e for e in entries
+            if e.get("id") and e.get("id") != last_id and e.get("id") not in played
+        ]
+        if not candidates:
+            # Si ya se jugaron todos, resetear historial y volver a intentar
+            radio_played[gid] = set()
+            candidates = [e for e in entries if e.get("id") != last_id]
         if not candidates:
             return False
+
         pick = random.choice(candidates)
         url = normalize_youtube_url(pick.get("webpage_url") or pick.get("url"))
         title = pick.get("title", "Desconocido")
         if not url:
             return False
+
+        if pick.get("id"):
+            radio_played[gid].add(pick["id"])
+
         queues.setdefault(gid, []).append((url, title))
         return True
     except Exception as e:
-        print(f"Autoplay error: {e}")
+        print(f"Radio error: {e}")
         return False
 
 
@@ -247,7 +255,7 @@ async def play_next(ctx):
     playnext_fail_count.setdefault(gid, 0)
 
     if not queue:
-        if await autoplay_next(ctx):
+        if await radio_next(ctx):
             return await play_next(ctx)
         current_song.pop(gid, None)
         if ctx.voice_client:
@@ -262,7 +270,7 @@ async def play_next(ctx):
         if not ctx.voice_client or not ctx.voice_client.is_connected():
             return
 
-        info, audio_url, _ = await extract_audio_with_fallback(url)
+        info, _, _ = await extract_audio_with_fallback(url)
 
         song = {
             "title": info.get("title", queued_title),
@@ -272,17 +280,26 @@ async def play_next(ctx):
             "uploader": info.get("uploader") or info.get("channel"),
         }
         current_song[gid] = song
-        last_played_query[gid] = song["title"]
         last_video_id[gid] = info.get("id")
 
-        hdr = ffmpeg_headers_from_info(info)
-        before = (
-            "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
-            f'-headers "{hdr}" '
-            '-referer "https://www.youtube.com/" '
-            '-user_agent "Mozilla/5.0"'
+        # Pipe yt-dlp → FFmpeg: más confiable que pasarle la URL directo
+        ydl_path = shutil.which("yt-dlp") or os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "yt-dlp.exe"
         )
-        source = discord.FFmpegPCMAudio(audio_url, before_options=before, options="-vn")
+        # WebM/Opus no requiere seek al escribir → compatible con pipes
+        ydl_cmd = [
+            ydl_path, "-o", "-",
+            "-f", "bestaudio[ext=webm]/bestaudio[ext=opus]/bestaudio[ext=ogg]/bestaudio",
+            "--no-playlist", "-q",
+        ]
+        if COOKIES_FILE:
+            ydl_cmd += ["--cookies", COOKIES_FILE]
+        ydl_cmd.append(url)
+
+        ydl_proc = subprocess.Popen(
+            ydl_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+        )
+        source = discord.FFmpegPCMAudio(ydl_proc.stdout, pipe=True, options="-vn")
         ctx.voice_client.play(
             source,
             after=lambda e: bot.loop.create_task(play_next(ctx)),
@@ -293,6 +310,7 @@ async def play_next(ctx):
 
     except Exception as e:
         playnext_fail_count[gid] = playnext_fail_count.get(gid, 0) + 1
+        traceback.print_exc()
         print(f"Play error: {e}")
 
         if playnext_fail_count[gid] == 1:
@@ -328,10 +346,18 @@ async def play(ctx, *, search: str = None):
         try:
             await ctx.author.voice.channel.connect(timeout=60)
         except asyncio.TimeoutError:
-            return await ctx.send("❌ No pude conectarme al canal de voz (timeout).")
+            try:
+                await ctx.send("❌ No pude conectarme al canal de voz (timeout). Verifica que el bot tenga permisos y que no haya un firewall bloqueando UDP.")
+            except Exception:
+                pass
+            return
         except (discord.Forbidden, discord.HTTPException, discord.ClientException) as e:
             print(f"Voice connect error: {e}")
-            return await ctx.send("❌ No pude conectarme al canal de voz (permisos/capacidad).")
+            try:
+                await ctx.send("❌ No pude conectarme al canal de voz (permisos/capacidad).")
+            except Exception:
+                pass
+            return
 
     await ctx.send(f"🔍 Buscando: **{search}**...")
 
@@ -360,6 +386,7 @@ async def play(ctx, *, search: str = None):
             await play_next(ctx)
 
     except Exception as e:
+        traceback.print_exc()
         print(f"Error en comando play: {e}")
         if is_youtube_login_block(e):
             return await ctx.send(
@@ -380,8 +407,11 @@ async def skip(ctx):
 
 @bot.command()
 async def stop(ctx):
-    queues[ctx.guild.id] = []
-    current_song.pop(ctx.guild.id, None)
+    gid = ctx.guild.id
+    queues[gid] = []
+    current_song.pop(gid, None)
+    radio_query.pop(gid, None)
+    radio_played.pop(gid, None)
     if ctx.voice_client:
         ctx.voice_client.stop()
         await ctx.voice_client.disconnect()
@@ -429,6 +459,10 @@ async def queue(ctx):
     elif not song:
         embed.description = "La cola está vacía."
 
+    rq = radio_query.get(gid)
+    if rq:
+        embed.set_footer(text=f"📻 Radio activa: {rq}")
+
     await ctx.send(embed=embed)
 
 
@@ -464,17 +498,51 @@ async def lyrics(ctx, *, song: str = None):
 
 
 @bot.command()
-async def autoplay(ctx, mode: str = None):
+async def radio(ctx, *, query: str = None):
     gid = ctx.guild.id
-    if mode == "on":
-        autoplay_enabled[gid] = True
-        await ctx.send("🔁 Autoplay activado.")
-    elif mode == "off":
-        autoplay_enabled[gid] = False
-        await ctx.send("⏹️ Autoplay desactivado.")
+
+    if not query or query.lower() == "off":
+        radio_query.pop(gid, None)
+        radio_played.pop(gid, None)
+        await ctx.send("📻 Radio desactivada.")
+        return
+
+    if not ctx.author.voice:
+        return await ctx.send("❌ Debes estar en un canal de voz.")
+
+    if not ctx.voice_client:
+        try:
+            await ctx.author.voice.channel.connect(timeout=60)
+        except asyncio.TimeoutError:
+            try:
+                await ctx.send("❌ No pude conectarme al canal de voz (timeout).")
+            except Exception:
+                pass
+            return
+        except (discord.Forbidden, discord.HTTPException, discord.ClientException) as e:
+            print(f"Voice connect error: {e}")
+            try:
+                await ctx.send("❌ No pude conectarme al canal de voz.")
+            except Exception:
+                pass
+            return
+
+    radio_query[gid] = query
+    radio_played[gid] = set()
+
+    embed = discord.Embed(
+        title="📻 Radio activada",
+        description=f"Reproduciendo canciones de **{query}** en bucle.",
+        color=discord.Color.og_blurple(),
+    )
+    await ctx.send(embed=embed)
+
+    if await radio_next(ctx):
+        if not (ctx.voice_client and ctx.voice_client.is_playing()):
+            await play_next(ctx)
     else:
-        state = autoplay_enabled.get(gid, False)
-        await ctx.send(f"Autoplay: {'🟢 ON' if state else '🔴 OFF'}")
+        radio_query.pop(gid, None)
+        await ctx.send("❌ No se encontraron canciones para ese estilo.")
 
 
 @bot.command()
@@ -487,7 +555,7 @@ async def comandos(ctx):
     embed.add_field(name="!queue / !q", value="Muestra la cola de reproducción.", inline=False)
     embed.add_field(name="!np / !nowplaying", value="Muestra la canción actual.", inline=False)
     embed.add_field(name="!lyrics [canción]", value="Muestra la letra de la canción.", inline=False)
-    embed.add_field(name="!autoplay <on/off>", value="Activa o desactiva el autoplay.", inline=False)
+    embed.add_field(name="!radio <estilo>", value="Reproduce canciones del estilo en bucle. `!radio off` para detener.", inline=False)
     embed.add_field(name="!clear <n>", value="Elimina los últimos n mensajes (requiere permisos).", inline=False)
     embed.add_field(name="!repo", value="Enlace al repositorio del bot.", inline=False)
     await ctx.send(embed=embed)
