@@ -1,0 +1,16 @@
+app = "bot-musica-discord"
+primary_region = "gru"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[processes]
+  app = "python bot.py"
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1
+
+[deploy]
+  strategy = "immediate"
