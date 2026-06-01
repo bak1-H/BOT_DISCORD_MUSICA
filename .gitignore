@@ -5,3 +5,8 @@ __pycache__/
 ffmpeg.exe
 ffprobe.exe
 yt-dlp.exe
+ytdlp_cache/
+ytdlp_cache.tar.gz
+cookies_refresh.txt
+.refresh_cookies.ps1
+refresh_cookies.ps1

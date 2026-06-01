@@ -4,6 +4,8 @@ import random
 import re
 import copy
 import traceback
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
@@ -579,5 +581,22 @@ async def clear(ctx, num: int):
 async def on_ready():
     print(f"[OK] {bot.user} listo.")
 
+
+class _HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+    def log_message(self, *_):
+        pass
+
+
+def _start_health_server():
+    port = int(os.getenv("PORT", 8080))
+    HTTPServer(("0.0.0.0", port), _HealthHandler).serve_forever()
+
+
+threading.Thread(target=_start_health_server, daemon=True).start()
 
 bot.run(os.getenv("DISCORD_TOKEN"))
