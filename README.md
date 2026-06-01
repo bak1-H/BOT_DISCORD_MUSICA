@@ -1,228 +1,182 @@
-# 🎵 Bot de Música para Discord
+# Bot de Música Discord
 
-Bot de Discord para reproducir música de YouTube con cola, autoplay y letras de canciones.
+Bot de música para Discord escrito en Python. Reproduce audio de YouTube en canales de voz, gestiona una cola de canciones, incluye modo radio por género y búsqueda de letras.
 
----
+## Tecnologías
 
-## Características
-
-- Reproducción de audio desde YouTube (búsqueda por nombre o URL directa)
-- Cola de reproducción por servidor
-- Autoplay: reproduce canciones similares automáticamente al vaciar la cola
-- Letras de canciones via Genius API
-- Pausa, reanuda, salta y detiene la reproducción
-- Embeds visuales con thumbnail, duración y canal
-- Soporte para cookies y PO Token de YouTube (bypass de bot-check)
-- Fallback automático entre clients de YouTube: `web → android → ios`
-- Soporte para proxy residencial
-
----
-
-## Requisitos del sistema
-
-- Python 3.11+
-- FFmpeg
-- Node.js 20 (requerido por yt-dlp para el runtime de JavaScript)
-- libopus (codec de audio para Discord)
-
----
-
-## Instalación local
-
-```bash
-# 1. Clonar el repositorio
-git clone https://github.com/bak1-H/BOT_DISCORD_MUSICA
-cd BOT_DISCORD_MUSICA
-
-# 2. Instalar dependencias Python
-pip install -r requirements.txt
-
-# 3. Crear archivo .env con las variables (ver sección Variables de entorno)
-cp .env.example .env
-
-# 4. Ejecutar
-python bot.py
-```
-
----
-
-## Variables de entorno
-
-Crea un archivo `.env` en la raíz del proyecto:
-
-```env
-# Obligatorias
-DISCORD_TOKEN=tu_token_de_discord
-GENIUS_TOKEN=tu_token_de_genius
-
-# YouTube — necesarias si el bot se ejecuta en servidores cloud (Railway, Render, etc.)
-YOUTUBE_COOKIES_B64=cookies_en_base64     # Archivo cookies.txt exportado desde el navegador, codificado en base64
-YOUTUBE_PO_TOKEN=po_token_de_youtube      # Proof-of-Origin token para el client web
-YOUTUBE_VISITOR_DATA=visitor_data         # Visitor data asociado al PO token
-
-# Opcional — proxy residencial para evitar bloqueos de YouTube
-YTDLP_PROXY=http://usuario:password@host:puerto
-```
-
-### Cómo obtener las cookies de YouTube
-
-1. Inicia sesión en YouTube en tu navegador
-2. Exporta las cookies con una extensión como **Get cookies.txt LOCALLY**
-3. Codifica el archivo en base64:
-   ```bash
-   base64 -w 0 cookies.txt
-   ```
-4. Pega el resultado en `YOUTUBE_COOKIES_B64`
-
----
+- **discord.py 2.7.1+** con soporte DAVE (protocolo de voz encriptado)
+- **yt-dlp** para extracción y streaming de audio de YouTube
+- **FFmpeg** para decodificación de audio (pipe yt-dlp → FFmpeg)
+- **LyricsGenius** para búsqueda de letras
+- **Fly.io** como plataforma de hosting
 
 ## Comandos
 
 | Comando | Descripción |
 |---|---|
-| `!play <canción o URL>` | Busca en YouTube y reproduce. Si ya hay algo sonando, lo añade a la cola. |
-| `!skip` | Salta la canción actual y reproduce la siguiente en cola. |
-| `!stop` | Detiene la reproducción, limpia la cola y desconecta el bot del canal. |
-| `!pause` | Pausa la reproducción. |
-| `!resume` | Reanuda la reproducción pausada. |
-| `!queue` / `!q` | Muestra la canción actual y hasta 10 canciones en cola. |
-| `!np` / `!nowplaying` | Muestra un embed con la canción que suena ahora. |
-| `!lyrics [canción]` | Muestra la letra. Si no se especifica canción, usa la que suena. |
-| `!autoplay <on/off>` | Activa o desactiva el autoplay. Sin argumento muestra el estado actual. |
-| `!clear <n>` | Elimina los últimos `n` mensajes del canal (requiere permiso `Manage Messages`). |
-| `!repo` | Muestra el enlace al repositorio. |
-| `!comandos` | Muestra la ayuda con todos los comandos. |
+| `!play <nombre o URL>` | Reproduce una canción o la añade a la cola |
+| `!skip` | Salta la canción actual |
+| `!stop` | Detiene la reproducción, limpia la cola y desconecta el bot |
+| `!pause` | Pausa la reproducción |
+| `!resume` | Reanuda la reproducción pausada |
+| `!queue` / `!q` | Muestra la cola y la canción actual |
+| `!np` / `!nowplaying` | Muestra la canción que se está reproduciendo |
+| `!lyrics [canción]` | Muestra la letra. Sin argumento usa la canción actual |
+| `!radio <estilo>` | Activa la radio: busca y reproduce canciones del género en bucle |
+| `!radio off` | Desactiva la radio |
+| `!clear <n>` | Elimina los últimos n mensajes (requiere permiso Manage Messages) |
+| `!repo` | Muestra el enlace al repositorio |
+| `!comandos` | Lista todos los comandos en Discord |
 
----
+## Variables de entorno
 
-## Despliegue
+Crear un archivo `.env` en la raíz del proyecto:
 
-### Docker
+```env
+DISCORD_TOKEN=tu_token_de_discord
+GENIUS_TOKEN=tu_token_de_genius
+```
+
+Variables opcionales:
+
+| Variable | Descripción |
+|---|---|
+| `YOUTUBE_COOKIES_B64` | Cookies de YouTube en base64 (necesario en servidores cloud) |
+| `YTDLP_PROXY` | Proxy para yt-dlp (formato `http://host:puerto`) |
+| `YOUTUBE_PO_TOKEN` | PO Token de YouTube para evitar bot-check |
+| `YOUTUBE_VISITOR_DATA` | Visitor Data de YouTube (complementa el PO Token) |
+| `PORT` | Puerto del health check HTTP (por defecto `8080`) |
+
+## Instalación local
+
+### Requisitos
+
+- Python 3.11+
+- FFmpeg en el PATH del sistema (o `ffmpeg.exe` en la carpeta del proyecto)
+- Node.js 20+ (usado por yt-dlp para descifrar algunos streams)
+
+### Pasos
 
 ```bash
-docker build -t bot-musica .
-docker run --env-file .env bot-musica
+pip install -r requirements.txt
 ```
 
-El `Dockerfile` incluye todas las dependencias del sistema: Python 3.11, FFmpeg, Node.js 20 y libopus.
+Crear el archivo `.env` con los tokens y ejecutar:
 
-### Railway / Nixpacks
-
-El archivo `nixpacks.toml` configura el build automáticamente:
-- **setup:** instala Python 3, FFmpeg y Node.js 20
-- **install:** crea el entorno virtual e instala `requirements.txt`
-- **start:** ejecuta `python bot.py`
-
-Solo necesitas configurar las variables de entorno en el panel de Railway.
-
----
-
-## Arquitectura del código
-
-Todo el bot vive en un único archivo `bot.py`, organizado en las siguientes secciones:
-
-### Inicialización
-
-```
-load_dotenv()                  → carga variables del archivo .env
-COOKIES_FILE                   → decodifica YOUTUBE_COOKIES_B64 y escribe cookies.txt en disco
-genius = lyricsgenius.Genius() → cliente de la API de Genius
-bot = commands.Bot()           → instancia del bot de Discord
+```bash
+python bot.py
 ```
 
-### Configuración (`_YTDLP_BASE`)
+En Windows, si FFmpeg no está en el PATH, basta con copiar `ffmpeg.exe` y `ffprobe.exe` a la carpeta del proyecto. El bot los detecta automáticamente.
 
-Diccionario base con las opciones comunes de yt-dlp. Nunca se usa directamente: `build_ytdlp_opts()` lo copia con `deepcopy` antes de añadir el `player_client` y opciones de búsqueda específicas para cada llamada.
+## Deploy en Fly.io
 
-### Estado en memoria
+### Primera vez
 
-Cada clave es el ID del servidor de Discord (`guild.id`):
-
-| Variable | Tipo | Descripción |
-|---|---|---|
-| `queues` | `dict[int, list[tuple[str, str]]]` | Cola de canciones: lista de `(url, título)` |
-| `current_song` | `dict[int, dict]` | Info de la canción actual: `title`, `url`, `thumbnail`, `duration`, `uploader` |
-| `autoplay_enabled` | `dict[int, bool]` | Estado del autoplay por servidor |
-| `last_played_query` | `dict[int, str]` | Título de la última canción (usado por autoplay para buscar similares) |
-| `last_video_id` | `dict[int, str]` | ID del último video (para no repetirlo en autoplay) |
-| `playnext_fail_count` | `dict[int, int]` | Contador de fallos consecutivos (detiene la cola tras `MAX_PLAYNEXT_FAILS=3`) |
-
-### Funciones helper
-
-| Función | Descripción |
-|---|---|
-| `format_duration(seconds)` | Convierte segundos a formato `MM:SS` o `H:MM:SS` |
-| `ffmpeg_headers_from_info(info)` | Extrae los headers HTTP del info de yt-dlp y los formatea para FFmpeg |
-| `clean_title_for_lyrics(title)` | Limpia el título de la canción eliminando "Official Video", feat., etc. para mejorar la búsqueda en Genius |
-| `normalize_youtube_url(value)` | Convierte un ID de video suelto a URL completa de YouTube |
-| `build_ytdlp_opts(is_search, client, search_count)` | Construye las opciones para yt-dlp con el `player_client` correcto |
-| `is_youtube_login_block(err)` | Detecta si el error es un bloqueo de bot por parte de YouTube |
-| `make_song_embed(song, in_queue)` | Genera un `discord.Embed` para mostrar la canción actual o añadida a la cola |
-
-### Extracción de audio
-
-**`ytdlp_extract(query, is_search, client, search_count)`**
-Ejecuta yt-dlp en un thread separado (para no bloquear el event loop de asyncio) usando `loop.run_in_executor()`. Retorna el diccionario `info` de yt-dlp.
-
-**`extract_audio_with_fallback(query)`**
-Itera sobre `YT_CLIENTS = ["web", "android", "ios"]`. Si un client falla (bloqueado por YouTube), prueba el siguiente. Retorna `(info, audio_url, client_usado)`.
-
-**`pick_best_audio_url(info)`**
-Selecciona la URL de audio de mayor calidad del resultado de yt-dlp:
-1. Prioriza formatos solo-audio (`vcodec == "none"`) ordenados por `abr` (bitrate de audio)
-2. Si no hay, usa formatos audio+video con mayor `tbr` (bitrate total)
-
-### Flujo de reproducción
-
-```
-!play "nombre canción"
-    └─ ytdlp_extract (búsqueda ytsearch1)
-    └─ append (url, title) a queues[gid]
-    └─ si no hay nada sonando → play_next(ctx)
-
-play_next(ctx)
-    ├─ si la cola está vacía:
-    │       └─ autoplay_next() → busca canciones similares (ytsearch5)
-    │                          → append a la cola y llama play_next de nuevo
-    │       └─ si autoplay off o falla → desconectar
-    └─ pop(0) de la cola → extract_audio_with_fallback()
-                         → FFmpegPCMAudio
-                         → voice_client.play(after=play_next)  ← encadena la siguiente
+```bash
+fly launch
 ```
 
-### Autoplay
+### Configurar secrets
 
-Cuando la cola se vacía y el autoplay está activado, `autoplay_next()`:
-1. Toma el título de la última canción reproducida
-2. Lo limpia con `clean_title_for_lyrics()` (elimina "Official Video", etc.)
-3. Busca 5 resultados en YouTube (`ytsearch5`)
-4. Filtra el último video reproducido para no repetirlo
-5. Elige uno al azar y lo añade a la cola
+```bash
+fly secrets set DISCORD_TOKEN="tu_token" GENIUS_TOKEN="tu_token" -a bot-discord-musica
+```
 
----
+### Deploy
 
-## Dependencias
+```bash
+fly deploy
+fly scale count 1 -a bot-discord-musica
+```
 
-| Paquete | Uso |
-|---|---|
-| `discord.py` | Framework para el bot de Discord y manejo de voz |
-| `yt-dlp[default]` | Extracción de audio de YouTube |
-| `lyricsgenius` | Cliente de la API de Genius para letras |
-| `python-dotenv` | Carga de variables de entorno desde `.env` |
-| `PyNaCl` | Encriptación requerida por discord.py para conexiones de voz |
+### Cookies de YouTube (recomendado en cloud)
 
----
+Los servidores de datacenter son frecuentemente bloqueados por YouTube. Para evitarlo hay que exportar las cookies del navegador y subirlas como secret.
 
-## Solución de problemas
+**Con el script incluido** (Chrome o Edge con sesión de YouTube activa):
 
-**El bot no reproduce en Railway/servidores cloud**
-YouTube bloquea IPs de datacenter. Soluciones en orden de efectividad:
-1. Configurar `YTDLP_PROXY` con un proxy residencial
-2. Rotar/actualizar `YOUTUBE_COOKIES_B64` (las cookies caducan)
-3. Ejecutar el bot en una IP residencial (VPS doméstico, Raspberry Pi, etc.)
+```powershell
+.\refresh_cookies.ps1
+```
 
-**Error "sign in to confirm you're not a bot"**
-Las cookies han caducado o rotado. Reexporta desde el navegador y actualiza `YOUTUBE_COOKIES_B64`.
+O manualmente:
 
-**La cola se detiene sola**
-Tras `3` fallos consecutivos (`MAX_PLAYNEXT_FAILS`) el bot limpia la cola y se desconecta para evitar bucles infinitos. Revisa los logs para ver el error específico.
+```powershell
+# Exportar cookies
+.\yt-dlp.exe --cookies-from-browser chrome --skip-download "https://www.youtube.com" --cookies cookies_temp.txt
+
+# Codificar y subir
+$b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes("cookies_temp.txt"))
+fly secrets set YOUTUBE_COOKIES_B64="$b64" -a bot-discord-musica
+```
+
+Las cookies expiran cada varios días. Para automatizar el refresco, programar el script con el Programador de Tareas de Windows:
+
+```powershell
+$action = New-ScheduledTaskAction -Execute "powershell.exe" `
+    -Argument "-NonInteractive -File `"ruta\al\refresh_cookies.ps1`""
+$trigger = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Days 5) -Once -At (Get-Date)
+Register-ScheduledTask -TaskName "RefreshYTCookies" -Action $action -Trigger $trigger -RunLevel Highest
+```
+
+### Ver logs
+
+```bash
+fly logs -a bot-discord-musica
+```
+
+## Arquitectura
+
+El bot usa un único archivo `bot.py` con la siguiente estructura:
+
+```
+bot.py
+├── Health check HTTP (arranca primero, puerto 8080 para Fly.io)
+├── Configuración y variables de entorno
+├── Estado por servidor (queues, current_song, radio_query, radio_played)
+├── Helpers (format_duration, make_song_embed, etc.)
+├── Extracción de audio
+│   ├── ytdlp_extract()                — búsqueda e info via Python API
+│   ├── extract_audio_with_fallback()  — prueba clientes web/android/ios
+│   └── pick_best_audio_url()          — selecciona el mejor stream
+├── Radio
+│   └── radio_next()    — busca por género, evita repetir canciones
+├── Reproducción
+│   └── play_next()     — pipe yt-dlp → FFmpeg → Discord voice
+└── Comandos (!play, !skip, !stop, !radio, etc.)
+```
+
+### Streaming de audio
+
+El audio se reproduce mediante un pipe: `yt-dlp` descarga el stream en formato WebM/Opus y lo pasa directamente a `FFmpegPCMAudio` sin escribir a disco. Esto evita el problema de los contenedores M4A/MP4 que requieren seek y son incompatibles con pipes.
+
+```
+yt-dlp -o - [url]  →  stdout  →  FFmpegPCMAudio(pipe=True)  →  Discord voice
+```
+
+### Modo Radio
+
+`!radio trap` activa la radio con el contexto "trap":
+
+1. Busca `ytsearch5:trap` en YouTube
+2. Filtra canciones ya reproducidas en esta sesión
+3. Elige una al azar y la encola
+4. Al terminar cada canción repite el proceso automáticamente
+5. Cuando se agota el historial lo resetea para no quedarse sin canciones
+
+### Multi-servidor
+
+Todo el estado se guarda en diccionarios con clave `guild.id`, por lo que el bot puede estar en múltiples servidores simultáneamente con colas y estados independientes.
+
+## Archivos ignorados por git
+
+```
+.env
+cookies.txt
+ffmpeg.exe
+ffprobe.exe
+yt-dlp.exe
+ytdlp_cache/
+refresh_cookies.ps1
+```

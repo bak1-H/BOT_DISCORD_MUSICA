@@ -4,7 +4,7 @@
 #
 
 app = 'bot-discord-musica'
-primary_region = 'ams'
+primary_region = 'gru'
 
 [build]
 
