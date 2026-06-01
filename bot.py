@@ -43,15 +43,24 @@ if not shutil.which("ffmpeg"):
 
 # ──────────────────── COOKIES ────────────────────
 COOKIES_FILE = None
-cookies_b64 = os.getenv("YOUTUBE_COOKIES_B64")
+_here = os.path.dirname(os.path.abspath(__file__))
+
+cookies_b64 = os.getenv("YOUTUBE_COOKIES_B64", "").strip()
 if cookies_b64:
     try:
-        with open("cookies.txt", "wb") as f:
+        _path = os.path.join(_here, "cookies.txt")
+        with open(_path, "wb") as f:
             f.write(base64.b64decode(cookies_b64))
-        COOKIES_FILE = "cookies.txt"
-        print("🍪 Cookies cargadas desde variable de entorno")
+        COOKIES_FILE = _path
+        print("[cookies] Cargadas desde variable de entorno")
     except Exception as e:
-        print(f"❌ Error cargando cookies: {e}")
+        print(f"[cookies] Error con env var: {e}")
+
+if not COOKIES_FILE:
+    _bundled = os.path.join(_here, "cookies.txt")
+    if os.path.exists(_bundled):
+        COOKIES_FILE = _bundled
+        print(f"[cookies] Usando archivo bundled")
 
 # ──────────────────── GENIUS ────────────────────
 genius = lyricsgenius.Genius(
