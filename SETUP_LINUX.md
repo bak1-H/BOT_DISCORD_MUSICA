@@ -71,6 +71,10 @@ sudo systemctl restart discord-musica
 sudo systemctl stop discord-musica
 ```
 
+> 💡 Desde Discord también podés reiniciar el bot con `!reiniciar`. El comando cierra
+> el proceso y systemd lo vuelve a levantar automáticamente gracias a `Restart=always`
+> — útil si se queda bugueado y no estás cerca del mini PC.
+
 ---
 
 ## Actualizar el bot (cuando haya cambios nuevos)

@@ -635,6 +635,7 @@ async def comandos(ctx):
     embed.add_field(name="!lyrics [canción]", value="Muestra la letra de la canción.", inline=False)
     embed.add_field(name="!radio <estilo>", value="Reproduce canciones del estilo en bucle. `!radio off` para detener.", inline=False)
     embed.add_field(name="!clear <n>", value="Elimina los últimos n mensajes (requiere permisos).", inline=False)
+    embed.add_field(name="!reiniciar", value="Reinicia el bot si se quedó bugueado.", inline=False)
     embed.add_field(name="!repo", value="Enlace al repositorio del bot.", inline=False)
     await ctx.send(embed=embed)
 
@@ -651,6 +652,20 @@ async def clear(ctx, num: int):
         return await ctx.send("❌ Usa un número mayor a 0.")
     deleted = await ctx.channel.purge(limit=num + 1)
     await ctx.send(f"🧹 Eliminados {len(deleted) - 1} mensajes.", delete_after=5)
+
+
+@bot.command(name="reiniciar", aliases=["restart"])
+async def reiniciar(ctx):
+    """Reinicia el proceso del bot. systemd (Restart=always) lo vuelve a levantar."""
+    await ctx.send("🔄 Reiniciando el bot... vuelvo en unos segundos.")
+    for vc in list(bot.voice_clients):
+        try:
+            await vc.disconnect(force=True)
+        except Exception:
+            pass
+    await bot.close()
+    # Salida limpia: en el mini PC systemd lo reinicia automaticamente.
+    os._exit(0)
 
 
 @bot.event

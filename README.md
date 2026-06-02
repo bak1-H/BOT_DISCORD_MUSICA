@@ -25,6 +25,7 @@ Bot de música para Discord escrito en Python. Reproduce audio de YouTube en can
 | `!radio <estilo>` | Activa la radio: busca y reproduce canciones del género en bucle |
 | `!radio off` | Desactiva la radio |
 | `!clear <n>` | Elimina los últimos n mensajes (requiere permiso Manage Messages) |
+| `!reiniciar` / `!restart` | Reinicia el bot si se quedó bugueado |
 | `!repo` | Muestra el enlace al repositorio |
 | `!comandos` | Lista todos los comandos en Discord |
 
