@@ -343,10 +343,9 @@ async def play_next(ctx):
             await ctx.send(f"❌ Error al reproducir: {e}")
 
         if is_youtube_login_block(e):
-            await ctx.send("❌ YouTube bloqueó la reproducción (bot-check). Reexporta las cookies.")
-            queues[gid] = []
-            if ctx.voice_client:
-                await ctx.voice_client.disconnect()
+            await ctx.send(f"⚠️ `{queued_title}` bloqueado por YouTube desde este servidor. Saltando.")
+            playnext_fail_count[gid] = 0
+            await play_next(ctx)
             return
 
         if playnext_fail_count[gid] >= MAX_PLAYNEXT_FAILS:
