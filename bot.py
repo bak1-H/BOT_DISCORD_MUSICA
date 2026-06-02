@@ -103,6 +103,29 @@ radio_query: dict[int, str | None] = {}       # contexto activo por servidor
 radio_played: dict[int, set[str]] = {}         # IDs reproducidos para no repetir
 last_video_id: dict[int, str] = {}
 playnext_fail_count: dict[int, int] = {}
+voice_state_locks: dict[int, asyncio.Lock] = {}
+
+
+def get_voice_lock(gid: int) -> asyncio.Lock:
+    lock = voice_state_locks.get(gid)
+    if lock is None:
+        lock = asyncio.Lock()
+        voice_state_locks[gid] = lock
+    return lock
+
+
+# Serializa el arranque de canciones por servidor: evita que dos invocaciones
+# de play_next (ej. encolar rapido mientras una cancion aun esta cargando)
+# reproduzcan a la vez y choquen con "Already playing audio".
+playback_locks: dict[int, asyncio.Lock] = {}
+
+
+def get_playback_lock(gid: int) -> asyncio.Lock:
+    lock = playback_locks.get(gid)
+    if lock is None:
+        lock = asyncio.Lock()
+        playback_locks[gid] = lock
+    return lock
 
 # ──────────────────── HELPERS ────────────────────
 
@@ -277,13 +300,31 @@ async def radio_next(ctx) -> bool:
 # ──────────────────── PLAY NEXT ────────────────────
 
 async def play_next(ctx):
+    """Serializa el arranque de la siguiente cancion. Lo llama el callback `after`."""
+    async with get_playback_lock(ctx.guild.id):
+        await _play_next_locked(ctx)
+
+
+async def ensure_playing(ctx):
+    """Arranca la reproduccion solo si no hay nada sonando ni cargando (serializado)."""
+    gid = ctx.guild.id
+    async with get_playback_lock(gid):
+        vc = ctx.voice_client
+        if not vc or not vc.is_connected():
+            return
+        if vc.is_playing() or vc.is_paused():
+            return
+        await _play_next_locked(ctx)
+
+
+async def _play_next_locked(ctx):
     gid = ctx.guild.id
     queue = queues.get(gid) or []
     playnext_fail_count.setdefault(gid, 0)
 
     if not queue:
         if await radio_next(ctx):
-            return await play_next(ctx)
+            return await _play_next_locked(ctx)
         current_song.pop(gid, None)
         if ctx.voice_client:
             await ctx.voice_client.disconnect()
@@ -294,9 +335,6 @@ async def play_next(ctx):
     url = normalize_youtube_url(url_raw)
 
     try:
-        if not ctx.voice_client or not ctx.voice_client.is_connected():
-            return
-
         info, _, _ = await extract_audio_with_fallback(url)
 
         song = {
@@ -325,16 +363,25 @@ async def play_next(ctx):
         ydl_proc = subprocess.Popen(
             ydl_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
         )
-        source = discord.FFmpegPCMAudio(ydl_proc.stdout, pipe=True, options="-vn")
-        ctx.voice_client.play(
-            source,
-            after=lambda e: bot.loop.create_task(play_next(ctx)),
-        )
+        async with get_voice_lock(gid):
+            if not ctx.voice_client or not ctx.voice_client.is_connected():
+                ydl_proc.kill()
+                return
+
+            source = discord.FFmpegPCMAudio(ydl_proc.stdout, pipe=True, options="-vn")
+            ctx.voice_client.play(
+                source,
+                after=lambda e: bot.loop.create_task(play_next(ctx)),
+            )
 
         await ctx.send(embed=make_song_embed(song))
         playnext_fail_count[gid] = 0
 
     except Exception as e:
+        # Otra invocacion ya esta reproduciendo: abortar sin contar como fallo ni reintentar.
+        if isinstance(e, discord.ClientException) and "already playing" in str(e).lower():
+            return
+
         playnext_fail_count[gid] = playnext_fail_count.get(gid, 0) + 1
         traceback.print_exc()
         print(f"Play error: {e}")
@@ -345,17 +392,18 @@ async def play_next(ctx):
         if is_youtube_login_block(e):
             await ctx.send(f"⚠️ `{queued_title}` bloqueado por YouTube desde este servidor. Saltando.")
             playnext_fail_count[gid] = 0
-            await play_next(ctx)
+            await _play_next_locked(ctx)
             return
 
         if playnext_fail_count[gid] >= MAX_PLAYNEXT_FAILS:
             await ctx.send("❌ Falló la reproducción varias veces. Deteniendo y limpiando cola.")
             queues[gid] = []
-            if ctx.voice_client:
-                await ctx.voice_client.disconnect()
+            async with get_voice_lock(gid):
+                if ctx.voice_client and ctx.voice_client.is_connected():
+                    await ctx.voice_client.disconnect()
             return
 
-        await play_next(ctx)
+        await _play_next_locked(ctx)
 
 
 # ──────────────────── COMANDOS ────────────────────
@@ -367,22 +415,23 @@ async def play(ctx, *, search: str = None):
     if not ctx.author.voice:
         return await ctx.send("❌ Debes estar en un canal de voz.")
 
-    if not ctx.voice_client:
-        try:
-            await ctx.author.voice.channel.connect(timeout=60)
-        except asyncio.TimeoutError:
+    async with get_voice_lock(ctx.guild.id):
+        if not ctx.voice_client or not ctx.voice_client.is_connected():
             try:
-                await ctx.send("❌ No pude conectarme al canal de voz (timeout). Verifica que el bot tenga permisos y que no haya un firewall bloqueando UDP.")
-            except Exception:
-                pass
-            return
-        except (discord.Forbidden, discord.HTTPException, discord.ClientException) as e:
-            print(f"Voice connect error: {e}")
-            try:
-                await ctx.send("❌ No pude conectarme al canal de voz (permisos/capacidad).")
-            except Exception:
-                pass
-            return
+                await ctx.author.voice.channel.connect(timeout=60)
+            except asyncio.TimeoutError:
+                try:
+                    await ctx.send("❌ No pude conectarme al canal de voz (timeout). Verifica que el bot tenga permisos y que no haya un firewall bloqueando UDP.")
+                except Exception:
+                    pass
+                return
+            except (discord.Forbidden, discord.HTTPException, discord.ClientException) as e:
+                print(f"Voice connect error: {e}")
+                try:
+                    await ctx.send("❌ No pude conectarme al canal de voz (permisos/capacidad).")
+                except Exception:
+                    pass
+                return
 
     await ctx.send(f"🔍 Buscando: **{search}**...")
 
@@ -398,7 +447,10 @@ async def play(ctx, *, search: str = None):
 
         queues.setdefault(ctx.guild.id, []).append((url, title))
 
-        if ctx.voice_client and ctx.voice_client.is_playing():
+        vc = ctx.voice_client
+        # "ocupado" = sonando, pausado, o con una cancion cargando (lock tomado)
+        busy = bool(vc and (vc.is_playing() or vc.is_paused())) or get_playback_lock(ctx.guild.id).locked()
+        if busy:
             song_preview = {
                 "title": title,
                 "url": url,
@@ -407,8 +459,7 @@ async def play(ctx, *, search: str = None):
                 "uploader": video.get("uploader") or video.get("channel"),
             }
             await ctx.send(embed=make_song_embed(song_preview, in_queue=True))
-        else:
-            await play_next(ctx)
+        await ensure_playing(ctx)
 
     except Exception as e:
         traceback.print_exc()
@@ -437,9 +488,11 @@ async def stop(ctx):
     current_song.pop(gid, None)
     radio_query.pop(gid, None)
     radio_played.pop(gid, None)
-    if ctx.voice_client:
-        ctx.voice_client.stop()
-        await ctx.voice_client.disconnect()
+    async with get_voice_lock(gid):
+        if ctx.voice_client:
+            ctx.voice_client.stop()
+            if ctx.voice_client.is_connected():
+                await ctx.voice_client.disconnect()
     await ctx.send("⏹️ Reproducción detenida.")
 
 
@@ -535,22 +588,23 @@ async def radio(ctx, *, query: str = None):
     if not ctx.author.voice:
         return await ctx.send("❌ Debes estar en un canal de voz.")
 
-    if not ctx.voice_client:
-        try:
-            await ctx.author.voice.channel.connect(timeout=60)
-        except asyncio.TimeoutError:
+    async with get_voice_lock(gid):
+        if not ctx.voice_client or not ctx.voice_client.is_connected():
             try:
-                await ctx.send("❌ No pude conectarme al canal de voz (timeout).")
-            except Exception:
-                pass
-            return
-        except (discord.Forbidden, discord.HTTPException, discord.ClientException) as e:
-            print(f"Voice connect error: {e}")
-            try:
-                await ctx.send("❌ No pude conectarme al canal de voz.")
-            except Exception:
-                pass
-            return
+                await ctx.author.voice.channel.connect(timeout=60)
+            except asyncio.TimeoutError:
+                try:
+                    await ctx.send("❌ No pude conectarme al canal de voz (timeout).")
+                except Exception:
+                    pass
+                return
+            except (discord.Forbidden, discord.HTTPException, discord.ClientException) as e:
+                print(f"Voice connect error: {e}")
+                try:
+                    await ctx.send("❌ No pude conectarme al canal de voz.")
+                except Exception:
+                    pass
+                return
 
     radio_query[gid] = query
     radio_played[gid] = set()
@@ -563,8 +617,7 @@ async def radio(ctx, *, query: str = None):
     await ctx.send(embed=embed)
 
     if await radio_next(ctx):
-        if not (ctx.voice_client and ctx.voice_client.is_playing()):
-            await play_next(ctx)
+        await ensure_playing(ctx)
     else:
         radio_query.pop(gid, None)
         await ctx.send("❌ No se encontraron canciones para ese estilo.")
