@@ -33,6 +33,7 @@ load_dotenv()
 os.environ["YT_DLP_JS_RUNTIME"] = "node"
 
 # Agrega ffmpeg local al PATH si no está disponible globalmente
+import sys
 import shutil
 import subprocess
 if not shutil.which("ffmpeg"):
@@ -308,13 +309,12 @@ async def play_next(ctx):
         current_song[gid] = song
         last_video_id[gid] = info.get("id")
 
-        # Pipe yt-dlp → FFmpeg: más confiable que pasarle la URL directo
-        ydl_path = shutil.which("yt-dlp") or os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "yt-dlp.exe"
-        )
+        # Pipe yt-dlp → FFmpeg: más confiable que pasarle la URL directo.
+        # Ejecuta yt-dlp como módulo del mismo Python: funciona en Windows y Linux,
+        # sin depender de un binario en el PATH ni de yt-dlp.exe.
         # WebM/Opus no requiere seek al escribir → compatible con pipes
         ydl_cmd = [
-            ydl_path, "-o", "-",
+            sys.executable, "-m", "yt_dlp", "-o", "-",
             "-f", "bestaudio[ext=webm]/bestaudio[ext=opus]/bestaudio[ext=ogg]/bestaudio",
             "--no-playlist", "-q",
         ]
