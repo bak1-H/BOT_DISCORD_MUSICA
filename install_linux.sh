@@ -3,18 +3,26 @@
 # Uso:  bash install_linux.sh
 set -euo pipefail
 
-APP_DIR="$HOME/BOT_DISCORD_MUSICA"
 REPO="https://github.com/bak1-H/BOT_DISCORD_MUSICA"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "==> [1/5] Instalando dependencias del sistema (ffmpeg, python, node, git)..."
 sudo apt-get update
 sudo apt-get install -y python3 python3-venv python3-pip ffmpeg git nodejs npm
 
-echo "==> [2/5] Clonando / actualizando el repositorio en $APP_DIR ..."
-if [ -d "$APP_DIR/.git" ]; then
-    git -C "$APP_DIR" pull --ff-only
+# Si este script ya vive dentro del repo (hay bot.py al lado), lo usamos tal cual.
+# Si se bajo suelto con curl, clonamos en $HOME.
+if [ -f "$SCRIPT_DIR/bot.py" ]; then
+    APP_DIR="$SCRIPT_DIR"
+    echo "==> [2/5] Usando repo existente en $APP_DIR"
 else
-    git clone "$REPO" "$APP_DIR"
+    APP_DIR="$HOME/BOT_DISCORD_MUSICA"
+    echo "==> [2/5] Clonando repositorio en $APP_DIR ..."
+    if [ -d "$APP_DIR/.git" ]; then
+        git -C "$APP_DIR" pull --ff-only
+    else
+        git clone "$REPO" "$APP_DIR"
+    fi
 fi
 
 cd "$APP_DIR"

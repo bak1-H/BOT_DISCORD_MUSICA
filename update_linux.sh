@@ -3,7 +3,8 @@
 # Uso:  bash update_linux.sh
 set -euo pipefail
 
-APP_DIR="$HOME/BOT_DISCORD_MUSICA"
+# Detecta el directorio del repo (donde vive este script), funcione donde funcione.
+APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICE_NAME="discord-musica"
 
 cd "$APP_DIR"
