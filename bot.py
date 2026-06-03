@@ -1,21 +1,4 @@
 import os
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
-
-# Health check arranca primero para que Fly.io lo detecte durante el deploy
-class _HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
-    def log_message(self, *_):
-        pass
-
-def _start_health_server():
-    HTTPServer(("0.0.0.0", int(os.getenv("PORT", 8080))), _HealthHandler).serve_forever()
-
-threading.Thread(target=_start_health_server, daemon=True).start()
-
 import asyncio
 import random
 import re
@@ -104,6 +87,8 @@ radio_played: dict[int, set[str]] = {}         # IDs reproducidos para no repeti
 last_video_id: dict[int, str] = {}
 playnext_fail_count: dict[int, int] = {}
 voice_state_locks: dict[int, asyncio.Lock] = {}
+ydl_procs: dict[int, subprocess.Popen] = {}
+loop_mode: dict[int, str] = {}  # "off" | "song" | "queue"
 
 
 def get_voice_lock(gid: int) -> asyncio.Lock:
@@ -118,6 +103,12 @@ def get_voice_lock(gid: int) -> asyncio.Lock:
 # de play_next (ej. encolar rapido mientras una cancion aun esta cargando)
 # reproduzcan a la vez y choquen con "Already playing audio".
 playback_locks: dict[int, asyncio.Lock] = {}
+
+
+def kill_ydl_proc(gid: int) -> None:
+    proc = ydl_procs.pop(gid, None)
+    if proc and proc.poll() is None:
+        proc.kill()
 
 
 def get_playback_lock(gid: int) -> asyncio.Lock:
@@ -319,8 +310,17 @@ async def ensure_playing(ctx):
 
 async def _play_next_locked(ctx):
     gid = ctx.guild.id
-    queue = queues.get(gid) or []
     playnext_fail_count.setdefault(gid, 0)
+
+    mode = loop_mode.get(gid, "off")
+    prev = current_song.get(gid)
+    if prev:
+        if mode == "song":
+            queues.setdefault(gid, []).insert(0, (prev["url"], prev["title"]))
+        elif mode == "queue":
+            queues.setdefault(gid, []).append((prev["url"], prev["title"]))
+
+    queue = queues.get(gid) or []
 
     if not queue:
         if await radio_next(ctx):
@@ -360,18 +360,21 @@ async def _play_next_locked(ctx):
             ydl_cmd += ["--cookies", COOKIES_FILE]
         ydl_cmd.append(url)
 
+        kill_ydl_proc(gid)
         ydl_proc = subprocess.Popen(
             ydl_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
         )
+        ydl_procs[gid] = ydl_proc
+
         async with get_voice_lock(gid):
             if not ctx.voice_client or not ctx.voice_client.is_connected():
-                ydl_proc.kill()
+                kill_ydl_proc(gid)
                 return
 
             source = discord.FFmpegPCMAudio(ydl_proc.stdout, pipe=True, options="-vn")
             ctx.voice_client.play(
                 source,
-                after=lambda e: bot.loop.create_task(play_next(ctx)),
+                after=lambda e: asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop),
             )
 
         await ctx.send(embed=make_song_embed(song))
@@ -474,6 +477,7 @@ async def play(ctx, *, search: str = None):
 
 @bot.command()
 async def skip(ctx):
+    kill_ydl_proc(ctx.guild.id)
     if ctx.voice_client and ctx.voice_client.is_playing():
         ctx.voice_client.stop()
         await ctx.send("⏭️ Canción saltada.")
@@ -484,8 +488,10 @@ async def skip(ctx):
 @bot.command()
 async def stop(ctx):
     gid = ctx.guild.id
+    kill_ydl_proc(gid)
     queues[gid] = []
     current_song.pop(gid, None)
+    loop_mode.pop(gid, None)
     radio_query.pop(gid, None)
     radio_played.pop(gid, None)
     async with get_voice_lock(gid):
@@ -633,6 +639,7 @@ async def comandos(ctx):
     embed.add_field(name="!queue / !q", value="Muestra la cola de reproducción.", inline=False)
     embed.add_field(name="!np / !nowplaying", value="Muestra la canción actual.", inline=False)
     embed.add_field(name="!lyrics [canción]", value="Muestra la letra de la canción.", inline=False)
+    embed.add_field(name="!loop", value="Cicla entre: sin loop → repetir canción → repetir cola.", inline=False)
     embed.add_field(name="!radio <estilo>", value="Reproduce canciones del estilo en bucle. `!radio off` para detener.", inline=False)
     embed.add_field(name="!clear <n>", value="Elimina los últimos n mensajes (requiere permisos).", inline=False)
     embed.add_field(name="!reiniciar", value="Reinicia el bot si se quedó bugueado.", inline=False)
@@ -643,6 +650,21 @@ async def comandos(ctx):
 @bot.command()
 async def repo(ctx):
     await ctx.send("🔗 Repositorio: https://github.com/bak1-H/BOT_DISCORD_MUSICA")
+
+
+@bot.command()
+async def loop(ctx):
+    gid = ctx.guild.id
+    modes = ["off", "song", "queue"]
+    current = loop_mode.get(gid, "off")
+    next_mode = modes[(modes.index(current) + 1) % len(modes)]
+    loop_mode[gid] = next_mode
+    labels = {
+        "off":   "➡️ Loop **desactivado**.",
+        "song":  "🔂 Repitiendo **canción actual**.",
+        "queue": "🔁 Repitiendo **cola completa**.",
+    }
+    await ctx.send(labels[next_mode])
 
 
 @bot.command()
