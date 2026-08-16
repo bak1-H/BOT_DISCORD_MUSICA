@@ -1,5 +1,7 @@
 # .gitignore
 cookies.txt
+downloads/
+playlists/
 __pycache__/
 .env
 ffmpeg.exe
